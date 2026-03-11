@@ -1069,8 +1069,8 @@ static void draw_menu(sr_framebuffer *fb_ptr) {
 
     sr_draw_text_shadow(px, W, H, 130, 180, "UP/DOWN  SELECT", gray, shadow);
     sr_draw_text_shadow(px, W, H, 130, 195, "ENTER    START", gray, shadow);
-    sr_draw_text_shadow(px, W, H, 130, 210, "TAB      MENU", gray, shadow);
-    sr_draw_text_shadow(px, W, H, 130, 225, "ESC      QUIT", gray, shadow);
+    sr_draw_text_shadow(px, W, H, 130, 210, "TAB/ESC  MENU", gray, shadow);
+    sr_draw_text_shadow(px, W, H, 130, 225, "TAP      SELECT/BACK", gray, shadow);
 }
 
 /* ── Frame limiter ───────────────────────────────────────────────── */
@@ -1396,7 +1396,62 @@ static void cleanup(void) {
 #endif
 }
 
+/* Map window coordinates to framebuffer pixel coordinates */
+static void screen_to_fb(float sx, float sy, float *fbx, float *fby) {
+    float fb_aspect  = (float)FB_WIDTH / (float)FB_HEIGHT;
+    float win_w = sapp_widthf(), win_h = sapp_heightf();
+    float win_aspect = win_w / win_h;
+
+    float scaled_w, scaled_h;
+    if (win_aspect > fb_aspect) {
+        scaled_h = win_h;
+        scaled_w = win_h * fb_aspect;
+    } else {
+        scaled_w = win_w;
+        scaled_h = win_w / fb_aspect;
+    }
+
+    float ox = (win_w - scaled_w) * 0.5f;
+    float oy = (win_h - scaled_h) * 0.5f;
+
+    *fbx = (sx - ox) / scaled_w * (float)FB_WIDTH;
+    *fby = (sy - oy) / scaled_h * (float)FB_HEIGHT;
+}
+
+/* Handle a tap/click at screen coordinates */
+static void handle_tap(float sx, float sy) {
+    float fx, fy;
+    screen_to_fb(sx, sy, &fx, &fy);
+
+    if (app_state == STATE_MENU) {
+        /* Menu items are at x=150, y=115 + i*15, text is ~120px wide */
+        for (int i = 0; i < SCENE_COUNT; i++) {
+            float item_y = 115.0f + (float)i * 15.0f;
+            if (fx >= 140.0f && fx <= 340.0f &&
+                fy >= item_y - 4.0f && fy <= item_y + 12.0f) {
+                current_scene = i;
+                menu_cursor = i;
+                app_state = STATE_RUNNING;
+                return;
+            }
+        }
+    } else {
+        /* Tap while running → back to menu */
+        app_state = STATE_MENU;
+    }
+}
+
 static void event(const sapp_event *ev) {
+    /* ── Touch / mouse tap ─────────────────────────────────── */
+    if (ev->type == SAPP_EVENTTYPE_MOUSE_DOWN && ev->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+        handle_tap(ev->mouse_x, ev->mouse_y);
+        return;
+    }
+    if (ev->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && ev->num_touches > 0) {
+        handle_tap(ev->touches[0].pos_x, ev->touches[0].pos_y);
+        return;
+    }
+
     if (ev->type != SAPP_EVENTTYPE_KEY_DOWN) return;
 
     /* ── Global keys (work in any state) ────────────────────── */
