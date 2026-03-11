@@ -1,0 +1,131 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-web:
+    name: Web (WASM) Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.51
+
+      - name: Download dependencies
+        run: |
+          mkdir -p third_party/sokol third_party/stb
+          curl -sL -o third_party/sokol/sokol_app.h  https://raw.githubusercontent.com/floooh/sokol/master/sokol_app.h
+          curl -sL -o third_party/sokol/sokol_gfx.h  https://raw.githubusercontent.com/floooh/sokol/master/sokol_gfx.h
+          curl -sL -o third_party/sokol/sokol_glue.h https://raw.githubusercontent.com/floooh/sokol/master/sokol_glue.h
+          curl -sL -o third_party/sokol/sokol_log.h  https://raw.githubusercontent.com/floooh/sokol/master/sokol_log.h
+          curl -sL -o third_party/stb/stb_image.h    https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
+          curl -sL -o third_party/stb/stb_image_write.h https://raw.githubusercontent.com/nothings/stb/master/stb_image_write.h
+
+      - name: Build WASM
+        run: |
+          mkdir -p build/web
+          emcc -O2 -std=c99 \
+            -msimd128 \
+            -s USE_WEBGL2=1 \
+            -s WASM=1 \
+            -s ALLOW_MEMORY_GROWTH=1 \
+            -s TOTAL_MEMORY=67108864 \
+            -I src \
+            -I third_party \
+            --preload-file assets \
+            src/sr_main.c \
+            src/sr_raster.c \
+            src/sr_texture.c \
+            src/sr_gif.c \
+            -o build/web/index.html \
+            --shell-file web/shell.html
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: starraster-web
+          path: build/web/
+
+  build-windows:
+    name: Windows Build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download dependencies
+        shell: bash
+        run: |
+          mkdir -p third_party/sokol third_party/stb
+          curl -sL -o third_party/sokol/sokol_app.h  https://raw.githubusercontent.com/floooh/sokol/master/sokol_app.h
+          curl -sL -o third_party/sokol/sokol_gfx.h  https://raw.githubusercontent.com/floooh/sokol/master/sokol_gfx.h
+          curl -sL -o third_party/sokol/sokol_glue.h https://raw.githubusercontent.com/floooh/sokol/master/sokol_glue.h
+          curl -sL -o third_party/sokol/sokol_log.h  https://raw.githubusercontent.com/floooh/sokol/master/sokol_log.h
+          curl -sL -o third_party/stb/stb_image.h    https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
+          curl -sL -o third_party/stb/stb_image_write.h https://raw.githubusercontent.com/nothings/stb/master/stb_image_write.h
+
+      - name: Build Windows exe
+        shell: bash
+        run: |
+          mkdir -p build
+          gcc -O2 -std=c99 \
+            -I src \
+            -I third_party \
+            src/sr_main.c \
+            src/sr_raster.c \
+            src/sr_texture.c \
+            src/sr_gif.c \
+            -o build/starraster.exe \
+            -lopengl32 -lgdi32 -luser32 -lkernel32 -lshell32 -lwinmm -lm
+
+      - name: Package Windows zip
+        shell: bash
+        run: |
+          mkdir -p starraster-win
+          cp build/starraster.exe starraster-win/
+          cp -r assets starraster-win/assets
+          cd starraster-win && 7z a -tzip ../starraster-windows.zip . && cd ..
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: starraster-windows
+          path: starraster-windows.zip
+
+  deploy-itch:
+    name: Deploy to itch.io
+    needs: [build-web, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download web build
+        uses: actions/download-artifact@v4
+        with:
+          name: starraster-web
+          path: web-build/
+
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: starraster-windows
+          path: win-build/
+
+      - name: Deploy web to itch.io
+        uses: robpc/itchio-upload-action@v1
+        with:
+          path: web-build/
+          project: rubentipparach/star-raster
+          channel: html5
+          api-key: ${{ secrets.BUTLER_API_KEY }}
+
+      - name: Deploy Windows to itch.io
+        uses: robpc/itchio-upload-action@v1
+        with:
+          path: win-build/starraster-windows.zip
+          project: rubentipparach/star-raster
+          channel: windows
+          api-key: ${{ secrets.BUTLER_API_KEY }}
