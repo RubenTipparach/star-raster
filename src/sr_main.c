@@ -193,7 +193,9 @@ static bool night_mode = false;
 
 #define NIGHT_SKY_COLOR   0xFF3B1A0A   /* dark navy blue (ABGR) */
 #define PAL_NIGHT_SKY     0xFF1E0E0A   /* darker sky for palette scene (ABGR) */
-#define PAL_AMBIENT        0.08f
+static float pal_ambient    = 0.12f;   /* adjustable ambient for palette scene */
+static float pal_light_mult = 1.0f;   /* multiplier for point light RGB */
+static bool  adjusting_ambient = true; /* L toggles: true=ambient, false=point light */
 #define PAL_DIFFUSE        0.0f        /* no sun in palette night scene */
 #define NIGHT_AMBIENT     0.05f
 
@@ -710,7 +712,7 @@ static inline uint32_t pal_intensity_color(float intensity) {
 static float pal_vertex_intensity(float px, float py, float pz,
                                    float nx, float ny, float nz)
 {
-    float total = PAL_AMBIENT;
+    float total = pal_ambient;
 
     /* Point lights via spatial grid */
     int gx = (int)((px - GRID_ORIGIN) / GRID_CELL);
@@ -965,8 +967,12 @@ static void draw_palette_scene(sr_framebuffer *fb_ptr, const sr_mat4 *vp, float 
     float lx = cosf(t * 1.2f) * orbit_radius;
     float lz = sinf(t * 1.2f) * orbit_radius;
     float ly = 2.5f + sinf(t * 0.7f) * 1.0f;
-    lights[0] = (point_light){ lx, ly, lz, 1.0f, 0.9f, 0.6f, 12.0f };
+    lights[0] = (point_light){ lx, ly, lz,
+        2.0f * pal_light_mult, 1.8f * pal_light_mult, 1.2f * pal_light_mult, 12.0f };
     build_light_grid();
+
+    /* Draw wireframe sphere at light position */
+    draw_wireframe_sphere(fb_ptr, vp, lx, ly, lz, 0.3f, 0xFF55CCFF, 16);
 }
 
 /* ── Stats overlay ───────────────────────────────────────────────── */
@@ -1007,6 +1013,25 @@ static void draw_stats(sr_framebuffer *fb_ptr, int tris) {
         const char *ntxt = night_mode ? "N = DAY" : "N = NIGHT";
         sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
                             3, FB_HEIGHT - 12, ntxt, 0xFF999999, shadow);
+    }
+
+    /* Palette scene lighting controls HUD */
+    if (current_scene == SCENE_PALETTE_HOUSE) {
+        uint32_t sel_col = 0xFF55CCFF;  /* highlight selected */
+        uint32_t dim_col = 0xFF999999;
+
+        snprintf(buf, sizeof(buf), "AMB: %.2f", pal_ambient);
+        sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
+                            3, FB_HEIGHT - 42, buf,
+                            adjusting_ambient ? sel_col : dim_col, shadow);
+
+        snprintf(buf, sizeof(buf), "LIGHT: %.1fx", pal_light_mult);
+        sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
+                            3, FB_HEIGHT - 32, buf,
+                            !adjusting_ambient ? sel_col : dim_col, shadow);
+
+        sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
+                            3, FB_HEIGHT - 12, "L=TOGGLE +/-=ADJ", 0xFF999999, shadow);
     }
 }
 
@@ -1442,6 +1467,35 @@ static void event(const sapp_event *ev) {
                 uint32_t fog_col = night_mode ? NIGHT_SKY_COLOR : FOG_COLOR;
                 sr_fog_set(fog_col, FOG_NEAR, FOG_FAR);
                 if (!night_mode) num_lights = 0;
+            }
+            break;
+        case SAPP_KEYCODE_L:
+            if (current_scene == SCENE_PALETTE_HOUSE) {
+                adjusting_ambient = !adjusting_ambient;
+            }
+            break;
+        case SAPP_KEYCODE_EQUAL:        /* + key (=/+) */
+        case SAPP_KEYCODE_KP_ADD:
+            if (current_scene == SCENE_PALETTE_HOUSE) {
+                if (adjusting_ambient) {
+                    pal_ambient += 0.02f;
+                    if (pal_ambient > 1.0f) pal_ambient = 1.0f;
+                } else {
+                    pal_light_mult += 0.1f;
+                    if (pal_light_mult > 5.0f) pal_light_mult = 5.0f;
+                }
+            }
+            break;
+        case SAPP_KEYCODE_MINUS:
+        case SAPP_KEYCODE_KP_SUBTRACT:
+            if (current_scene == SCENE_PALETTE_HOUSE) {
+                if (adjusting_ambient) {
+                    pal_ambient -= 0.02f;
+                    if (pal_ambient < 0.0f) pal_ambient = 0.0f;
+                } else {
+                    pal_light_mult -= 0.1f;
+                    if (pal_light_mult < 0.0f) pal_light_mult = 0.0f;
+                }
             }
             break;
         default: break;
