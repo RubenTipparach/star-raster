@@ -118,7 +118,7 @@ jobs:
         uses: robpc/itchio-upload-action@v1
         with:
           path: web-build/
-          project: rubentipparach/star-raster
+          project: ruben-tipparach/star-raster
           channel: html5
           api-key: ${{ secrets.BUTLER_API_KEY }}
 
@@ -126,6 +126,6 @@ jobs:
         uses: robpc/itchio-upload-action@v1
         with:
           path: win-build/starraster-windows.zip
-          project: rubentipparach/star-raster
+          project: ruben-tipparach/star-raster
           channel: windows
           api-key: ${{ secrets.BUTLER_API_KEY }}
