@@ -1,0 +1,23 @@
+# Dungeon lighting & fog configuration
+
+# Player torch light (point light attached to camera)
+torch:
+  color: [1.0, 1.0, 1.0]       # RGB normalized
+  brightness: 1.0               # intensity multiplier
+  min_range: 1.0                # radius of full brightness (no falloff)
+  attn_dist: 6.0                # distance over which light fades to zero
+
+# Ambient lighting (constant base illumination)
+ambient:
+  color: [0.15, 0.12, 0.18]    # RGB normalized
+  brightness: 0.1               # intensity multiplier
+
+# Depth fog (dithered brightness bands via depth buffer)
+#   Instead of blending a fog color, we shift toward darker shades
+#   based on depth. Uses the Bayer-dithered shade system.
+fog:
+  levels: 5
+  start:     [1.5, 3.0, 4.0, 5.5, 7.0]   # depth thresholds per band
+  intensity: [0.9, 0.65, 0.4, 0.2, 0.05]  # shade brightness per band (1=bright, 0=black)
+  density:   [0.25, 0.35, 0.5, 0.75, 1.0] # dither coverage per band (0=clear, 1=solid)
+  stop: 8.0                                # max render distance in cells

@@ -26,12 +26,15 @@ public class MainForm : Form
     private Panel convertPaletteDrop = null!;
     private Label convertImageLabel = null!;
     private Label convertPaletteLabel = null!;
+    private ListBox convertFileList = null!;
     private CheckBox chkDither = null!;
     private Button btnConvert = null!;
-    private Button btnExportConverted = null!;
-    private Bitmap? convertSource;
+    private Button btnExportSelected = null!;
+    private Button btnExportAll = null!;
+    private Button btnRemoveSelected = null!;
+    private List<(string path, string name, Bitmap source, Bitmap? result)> convertSources = new();
     private Color[]? convertPalette;
-    private Bitmap? convertResult;
+    private string convertPaletteName = "";
 
     public MainForm()
     {
@@ -215,18 +218,18 @@ public class MainForm : Form
         var tab = new TabPage("Image → Indexed Color");
         tabs.TabPages.Add(tab);
 
-        // Image drop zone
+        // Image drop zone (accepts multiple files)
         convertImageDrop = new Panel
         {
             Location = new Point(12, 12),
-            Size = new Size(220, 70),
+            Size = new Size(220, 50),
             BorderStyle = BorderStyle.FixedSingle,
             AllowDrop = true,
             BackColor = Color.FromArgb(40, 40, 40),
         };
         convertImageLabel = new Label
         {
-            Text = "Drop source image here",
+            Text = "Drop source image(s) here",
             ForeColor = Color.LightGray,
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleCenter,
@@ -236,11 +239,27 @@ public class MainForm : Form
         convertImageDrop.DragDrop += ConvertImageDrop_DragDrop;
         tab.Controls.Add(convertImageDrop);
 
+        // File list
+        convertFileList = new ListBox
+        {
+            Location = new Point(12, 66),
+            Size = new Size(220, 110),
+            BackColor = Color.FromArgb(35, 35, 35),
+            ForeColor = Color.LightGray,
+            BorderStyle = BorderStyle.FixedSingle,
+        };
+        convertFileList.SelectedIndexChanged += ConvertFileList_SelectedChanged;
+        tab.Controls.Add(convertFileList);
+
+        btnRemoveSelected = new Button { Text = "Remove", Location = new Point(12, 180), Size = new Size(100, 24), Enabled = false };
+        btnRemoveSelected.Click += BtnRemoveSelected_Click;
+        tab.Controls.Add(btnRemoveSelected);
+
         // Palette drop zone
         convertPaletteDrop = new Panel
         {
             Location = new Point(250, 12),
-            Size = new Size(220, 70),
+            Size = new Size(220, 50),
             BorderStyle = BorderStyle.FixedSingle,
             AllowDrop = true,
             BackColor = Color.FromArgb(40, 40, 40),
@@ -258,30 +277,30 @@ public class MainForm : Form
         tab.Controls.Add(convertPaletteDrop);
 
         // Controls
-        chkDither = new CheckBox { Text = "Floyd-Steinberg Dithering", Location = new Point(490, 16), AutoSize = true, Checked = true };
-        btnConvert = new Button { Text = "Convert", Location = new Point(490, 46), Size = new Size(80, 28), Enabled = false };
+        chkDither = new CheckBox { Text = "Floyd-Steinberg Dithering", Location = new Point(250, 70), AutoSize = true, Checked = true };
+        btnConvert = new Button { Text = "Convert All", Location = new Point(250, 96), Size = new Size(100, 28), Enabled = false };
         btnConvert.Click += BtnConvert_Click;
-        btnExportConverted = new Button { Text = "Export PNG", Location = new Point(580, 46), Size = new Size(90, 28), Enabled = false };
-        btnExportConverted.Click += BtnExportConverted_Click;
-        tab.Controls.AddRange(new Control[] { chkDither, btnConvert, btnExportConverted });
+        btnExportSelected = new Button { Text = "Export Selected", Location = new Point(250, 130), Size = new Size(110, 28), Enabled = false };
+        btnExportSelected.Click += BtnExportSelected_Click;
+        btnExportAll = new Button { Text = "Export All", Location = new Point(370, 130), Size = new Size(90, 28), Enabled = false };
+        btnExportAll.Click += BtnExportAll_Click;
+        tab.Controls.AddRange(new Control[] { chkDither, btnConvert, btnExportSelected, btnExportAll });
 
-        // Source preview
-        convertSourcePreview = new PictureBox
+        // Source preview (nearest-neighbor scaling)
+        convertSourcePreview = new NearestNeighborPictureBox
         {
-            Location = new Point(12, 90),
-            Size = new Size(450, 400),
-            SizeMode = PictureBoxSizeMode.Zoom,
+            Location = new Point(12, 210),
+            Size = new Size(450, 390),
             BorderStyle = BorderStyle.FixedSingle,
             BackColor = Color.FromArgb(30, 30, 30),
         };
         tab.Controls.Add(convertSourcePreview);
 
-        // Result preview
-        convertResultPreview = new PictureBox
+        // Result preview (nearest-neighbor scaling)
+        convertResultPreview = new NearestNeighborPictureBox
         {
-            Location = new Point(470, 90),
-            Size = new Size(450, 400),
-            SizeMode = PictureBoxSizeMode.Zoom,
+            Location = new Point(470, 210),
+            Size = new Size(450, 390),
             BorderStyle = BorderStyle.FixedSingle,
             BackColor = Color.FromArgb(30, 30, 30),
         };
@@ -292,18 +311,30 @@ public class MainForm : Form
     {
         var files = (string[]?)e.Data?.GetData(DataFormats.FileDrop);
         if (files == null || files.Length == 0) return;
-        try
+
+        int added = 0;
+        foreach (string file in files)
         {
-            convertSource?.Dispose();
-            convertSource = new Bitmap(files[0]);
-            convertSourcePreview.Image?.Dispose();
-            convertSourcePreview.Image = new Bitmap(convertSource);
-            convertImageLabel.Text = $"{Path.GetFileName(files[0])}\n{convertSource.Width}x{convertSource.Height}";
-            UpdateConvertButton();
+            try
+            {
+                var bmp = new Bitmap(file);
+                string name = Path.GetFileNameWithoutExtension(file);
+                convertSources.Add((file, name, bmp, null));
+                convertFileList.Items.Add($"{name}  ({bmp.Width}x{bmp.Height})");
+                added++;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to load {Path.GetFileName(file)}:\n{ex.Message}",
+                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
-        catch (Exception ex)
+
+        if (added > 0)
         {
-            MessageBox.Show($"Failed to load image:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            convertImageLabel.Text = $"{convertSources.Count} image(s) loaded";
+            convertFileList.SelectedIndex = convertSources.Count - 1;
+            UpdateConvertButton();
         }
     }
 
@@ -319,6 +350,7 @@ public class MainForm : Form
             else
                 convertPalette = PaletteCore.LoadPaletteFromImage(path);
 
+            convertPaletteName = Path.GetFileNameWithoutExtension(path);
             convertPaletteLabel.Text = $"{Path.GetFileName(path)}\n{convertPalette.Length} colors";
             UpdateConvertButton();
         }
@@ -328,23 +360,83 @@ public class MainForm : Form
         }
     }
 
+    void ConvertFileList_SelectedChanged(object? sender, EventArgs e)
+    {
+        int idx = convertFileList.SelectedIndex;
+        if (idx < 0 || idx >= convertSources.Count) return;
+
+        var entry = convertSources[idx];
+        convertSourcePreview.Image?.Dispose();
+        convertSourcePreview.Image = new Bitmap(entry.source);
+
+        convertResultPreview.Image?.Dispose();
+        convertResultPreview.Image = entry.result != null ? new Bitmap(entry.result) : null;
+
+        btnRemoveSelected.Enabled = true;
+        btnExportSelected.Enabled = entry.result != null;
+    }
+
+    void BtnRemoveSelected_Click(object? sender, EventArgs e)
+    {
+        int idx = convertFileList.SelectedIndex;
+        if (idx < 0 || idx >= convertSources.Count) return;
+
+        convertSources[idx].source.Dispose();
+        convertSources[idx].result?.Dispose();
+        convertSources.RemoveAt(idx);
+        convertFileList.Items.RemoveAt(idx);
+
+        convertSourcePreview.Image = null;
+        convertResultPreview.Image = null;
+        convertImageLabel.Text = convertSources.Count > 0
+            ? $"{convertSources.Count} image(s) loaded"
+            : "Drop source image(s) here";
+
+        if (convertSources.Count > 0)
+            convertFileList.SelectedIndex = Math.Min(idx, convertSources.Count - 1);
+        else
+            btnRemoveSelected.Enabled = false;
+
+        UpdateConvertButton();
+    }
+
     void UpdateConvertButton()
     {
-        btnConvert.Enabled = convertSource != null && convertPalette != null;
+        btnConvert.Enabled = convertSources.Count > 0 && convertPalette != null;
+    }
+
+    string GetExportName(string sourceName)
+    {
+        if (string.IsNullOrEmpty(convertPaletteName))
+            return $"{sourceName}_converted.png";
+        return $"{sourceName}_{convertPaletteName}.png";
     }
 
     void BtnConvert_Click(object? sender, EventArgs e)
     {
-        if (convertSource == null || convertPalette == null) return;
+        if (convertSources.Count == 0 || convertPalette == null) return;
 
         Cursor = Cursors.WaitCursor;
         try
         {
-            convertResult?.Dispose();
-            convertResult = PaletteCore.ConvertToIndexed(convertSource, convertPalette, chkDither.Checked);
-            convertResultPreview.Image?.Dispose();
-            convertResultPreview.Image = new Bitmap(convertResult);
-            btnExportConverted.Enabled = true;
+            for (int i = 0; i < convertSources.Count; i++)
+            {
+                var entry = convertSources[i];
+                entry.result?.Dispose();
+                entry.result = PaletteCore.ConvertToIndexed(entry.source, convertPalette, chkDither.Checked);
+                convertSources[i] = entry;
+            }
+
+            // Show the currently selected result
+            int sel = convertFileList.SelectedIndex;
+            if (sel >= 0 && sel < convertSources.Count && convertSources[sel].result != null)
+            {
+                convertResultPreview.Image?.Dispose();
+                convertResultPreview.Image = new Bitmap(convertSources[sel].result!);
+                btnExportSelected.Enabled = true;
+            }
+
+            btnExportAll.Enabled = true;
         }
         finally
         {
@@ -352,12 +444,40 @@ public class MainForm : Form
         }
     }
 
-    void BtnExportConverted_Click(object? sender, EventArgs e)
+    void BtnExportSelected_Click(object? sender, EventArgs e)
     {
-        if (convertResult == null) return;
-        using var dlg = new SaveFileDialog { Filter = "PNG|*.png", FileName = "converted.png" };
+        int idx = convertFileList.SelectedIndex;
+        if (idx < 0 || idx >= convertSources.Count) return;
+        var entry = convertSources[idx];
+        if (entry.result == null) return;
+
+        using var dlg = new SaveFileDialog
+        {
+            Filter = "PNG|*.png",
+            FileName = GetExportName(entry.name),
+        };
         if (dlg.ShowDialog() == DialogResult.OK)
-            convertResult.Save(dlg.FileName, ImageFormat.Png);
+            entry.result.Save(dlg.FileName, ImageFormat.Png);
+    }
+
+    void BtnExportAll_Click(object? sender, EventArgs e)
+    {
+        var converted = convertSources.Where(s => s.result != null).ToList();
+        if (converted.Count == 0) return;
+
+        using var dlg = new FolderBrowserDialog { Description = "Select export folder" };
+        if (dlg.ShowDialog() != DialogResult.OK) return;
+
+        int exported = 0;
+        foreach (var entry in converted)
+        {
+            string outPath = Path.Combine(dlg.SelectedPath, GetExportName(entry.name));
+            entry.result!.Save(outPath, ImageFormat.Png);
+            exported++;
+        }
+
+        MessageBox.Show($"Exported {exported} file(s) to:\n{dlg.SelectedPath}",
+            "Export Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     // ───────────────────────── Shared ─────────────────────────
@@ -366,5 +486,34 @@ public class MainForm : Form
     {
         if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
             e.Effect = DragDropEffects.Copy;
+    }
+}
+
+/// <summary>
+/// PictureBox that uses nearest-neighbor interpolation for crisp pixel art scaling.
+/// </summary>
+public class NearestNeighborPictureBox : PictureBox
+{
+    public NearestNeighborPictureBox()
+    {
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
+    }
+
+    protected override void OnPaint(PaintEventArgs pe)
+    {
+        if (Image == null) { base.OnPaint(pe); return; }
+
+        pe.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+        pe.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+        pe.Graphics.Clear(BackColor);
+
+        // Fit image within bounds preserving aspect ratio
+        float scale = Math.Min((float)Width / Image.Width, (float)Height / Image.Height);
+        float w = Image.Width * scale;
+        float h = Image.Height * scale;
+        float x = (Width - w) * 0.5f;
+        float y = (Height - h) * 0.5f;
+
+        pe.Graphics.DrawImage(Image, x, y, w, h);
     }
 }
