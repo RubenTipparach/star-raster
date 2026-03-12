@@ -196,8 +196,31 @@ static bool night_mode = false;
 static float pal_ambient    = 0.12f;   /* adjustable ambient for palette scene */
 static float pal_light_mult = 1.0f;   /* multiplier for point light RGB */
 static bool  adjusting_ambient = true; /* L toggles: true=ambient, false=point light */
+static bool  pixel_lighting = false;  /* V toggles: vertex vs pixel lighting */
+static bool  shadows_enabled = false; /* S toggles shadow mapping */
 #define PAL_DIFFUSE        0.0f        /* no sun in palette night scene */
 #define NIGHT_AMBIENT     0.05f
+
+/* ── Shadow map ────────────────────────────────────────────────────── */
+
+#define SHADOW_SIZE  256
+#define SHADOW_BIAS  0.008f
+
+static sr_framebuffer shadow_fb;
+static sr_mat4        light_vp;
+
+static float shadow_test(float wx, float wy, float wz) {
+    if (!shadows_enabled) return 1.0f;
+    sr_vec4 lp = sr_mat4_mul_v4(light_vp, sr_v4(wx, wy, wz, 1.0f));
+    if (lp.w <= 0.001f) return 1.0f; /* behind light */
+    float lx = lp.x / lp.w, ly = lp.y / lp.w, lz = lp.z / lp.w;
+    /* NDC to shadow map texel */
+    int sx = (int)((lx + 1.0f) * 0.5f * SHADOW_SIZE);
+    int sy = (int)((1.0f - ly) * 0.5f * SHADOW_SIZE);
+    if (sx < 0 || sx >= SHADOW_SIZE || sy < 0 || sy >= SHADOW_SIZE) return 1.0f;
+    float stored_z = shadow_fb.depth[sy * SHADOW_SIZE + sx];
+    return (lz - SHADOW_BIAS > stored_z) ? 0.0f : 1.0f;
+}
 
 /* Point light */
 typedef struct {
@@ -713,6 +736,7 @@ static float pal_vertex_intensity(float px, float py, float pz,
                                    float nx, float ny, float nz)
 {
     float total = pal_ambient;
+    float shadow = shadow_test(px, py, pz);
 
     /* Point lights via spatial grid */
     int gx = (int)((px - GRID_ORIGIN) / GRID_CELL);
@@ -733,7 +757,7 @@ static float pal_vertex_intensity(float px, float py, float pz,
             if (ldot < 0.0f) ldot = 0.0f;
             /* Average the light's RGB contribution as a single intensity */
             float lum = (lights[i].r + lights[i].g + lights[i].b) * (1.0f / 3.0f);
-            total += lum * atten * ldot;
+            total += lum * atten * ldot * shadow;
         }
     }
 
@@ -751,7 +775,7 @@ static sr_vertex pal_house_vert(float lx, float ly, float lz, float u, float v,
     float wnx = nx*c + nz*s, wny = ny, wnz = -nx*s + nz*c;
     float intensity = pal_vertex_intensity(wx, wy, wz, wnx, wny, wnz);
     uint32_t col = pal_intensity_color(intensity);
-    return (sr_vertex){ {lx, ly, lz}, {u, v}, col };
+    return sr_vert_world(lx, ly, lz, u, v, col, wx, wy, wz, wnx, wny, wnz);
 }
 
 static void draw_palette_house(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
@@ -760,12 +784,23 @@ static void draw_palette_house(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
 
     #define PV(lx,ly,lz,u,v,nx,ny,nz) pal_house_vert(lx,ly,lz,u,v,nx,ny,nz,hx,hz,rot_y)
 
+    /* Select vertex-lit or pixel-lit draw functions */
+    void (*draw_quad)(sr_framebuffer*, sr_vertex, sr_vertex, sr_vertex, sr_vertex,
+                      const sr_indexed_texture*, const sr_mat4*) =
+        pixel_lighting ? sr_draw_quad_indexed_pixellit : sr_draw_quad_indexed;
+    void (*draw_tri)(sr_framebuffer*, sr_vertex, sr_vertex, sr_vertex,
+                     const sr_indexed_texture*, const sr_mat4*) =
+        pixel_lighting ? sr_draw_triangle_indexed_pixellit : sr_draw_triangle_indexed;
+    void (*draw_quad_ds)(sr_framebuffer*, sr_vertex, sr_vertex, sr_vertex, sr_vertex,
+                         const sr_indexed_texture*, const sr_mat4*) =
+        pixel_lighting ? sr_draw_quad_indexed_doublesided_pixellit : sr_draw_quad_indexed_doublesided;
+
     float slope = (RP - WH) / W;
     float rn_len = sqrtf(1.0f + slope * slope);
     float rnx = 1.0f / rn_len, rny = slope / rn_len;
 
     /* Back wall */
-    sr_draw_quad_indexed(fb_ptr,
+    draw_quad(fb_ptr,
         PV(-W, 0,  -D,  0,   WH/2,  0,0,-1),
         PV( W, 0,  -D,  W,   WH/2,  0,0,-1),
         PV( W, WH, -D,  W,   0,     0,0,-1),
@@ -773,7 +808,7 @@ static void draw_palette_house(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
         &itextures[ITEX_BRICK], mvp);
 
     /* Left wall */
-    sr_draw_quad_indexed(fb_ptr,
+    draw_quad(fb_ptr,
         PV(-W, 0,   D,  0,    WH/2, -1,0,0),
         PV(-W, 0,  -D,  D,    WH/2, -1,0,0),
         PV(-W, WH, -D,  D,    0,    -1,0,0),
@@ -781,7 +816,7 @@ static void draw_palette_house(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
         &itextures[ITEX_BRICK], mvp);
 
     /* Right wall */
-    sr_draw_quad_indexed(fb_ptr,
+    draw_quad(fb_ptr,
         PV( W, 0,  -D,  0,    WH/2,  1,0,0),
         PV( W, 0,   D,  D,    WH/2,  1,0,0),
         PV( W, WH,  D,  D,    0,     1,0,0),
@@ -789,7 +824,7 @@ static void draw_palette_house(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
         &itextures[ITEX_BRICK], mvp);
 
     /* Front wall (simplified, no door cutout for this demo) */
-    sr_draw_quad_indexed(fb_ptr,
+    draw_quad(fb_ptr,
         PV( W, 0,   D,  0,   WH/2, 0,0,1),
         PV(-W, 0,   D,  W,   WH/2, 0,0,1),
         PV(-W, WH,  D,  W,   0,    0,0,1),
@@ -799,7 +834,7 @@ static void draw_palette_house(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
     /* Door */
     {
         float dhw = 0.4f, dh = 1.6f;
-        sr_draw_quad_indexed(fb_ptr,
+        draw_quad(fb_ptr,
             PV( dhw, 0,  D+0.01f, 0,1, 0,0,1),
             PV(-dhw, 0,  D+0.01f, 1,1, 0,0,1),
             PV(-dhw, dh, D+0.01f, 1,0, 0,0,1),
@@ -808,13 +843,13 @@ static void draw_palette_house(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
     }
 
     /* Gable ends */
-    sr_draw_triangle_indexed(fb_ptr,
+    draw_tri(fb_ptr,
         PV( W, WH, D,  0,    1, 0,0,1),
         PV(-W, WH, D,  1,    1, 0,0,1),
         PV( 0, RP, D,  0.5f, 0, 0,0,1),
         &itextures[ITEX_BRICK], mvp);
 
-    sr_draw_triangle_indexed(fb_ptr,
+    draw_tri(fb_ptr,
         PV(-W, WH, -D, 0,    1, 0,0,-1),
         PV( W, WH, -D, 1,    1, 0,0,-1),
         PV( 0, RP, -D, 0.5f, 0, 0,0,-1),
@@ -825,14 +860,14 @@ static void draw_palette_house(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
         float oh = 0.3f;
         float ey = WH - oh * slope;
 
-        sr_draw_quad_indexed_doublesided(fb_ptr,
+        draw_quad_ds(fb_ptr,
             PV( 0,    RP, -D-oh,  0,    1, -rnx,rny,0),
             PV( 0,    RP,  D+oh,  1.5f, 1, -rnx,rny,0),
             PV(-W-oh, ey,  D+oh,  1.5f, 0, -rnx,rny,0),
             PV(-W-oh, ey, -D-oh,  0,    0, -rnx,rny,0),
             &itextures[ITEX_ROOF], mvp);
 
-        sr_draw_quad_indexed_doublesided(fb_ptr,
+        draw_quad_ds(fb_ptr,
             PV( 0,    RP,  D+oh,  0,    1,  rnx,rny,0),
             PV( 0,    RP, -D-oh,  1.5f, 1,  rnx,rny,0),
             PV( W+oh, ey, -D-oh,  1.5f, 0,  rnx,rny,0),
@@ -844,14 +879,14 @@ static void draw_palette_house(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
     {
         float wy = 1.0f, wh = 0.6f, whw = 0.35f, wz = 0.0f;
 
-        sr_draw_quad_indexed(fb_ptr,
+        draw_quad(fb_ptr,
             PV(-W-0.01f, wy,    wz+whw, 0,1, -1,0,0),
             PV(-W-0.01f, wy,    wz-whw, 1,1, -1,0,0),
             PV(-W-0.01f, wy+wh, wz-whw, 1,0, -1,0,0),
             PV(-W-0.01f, wy+wh, wz+whw, 0,0, -1,0,0),
             &itextures[ITEX_TILE], mvp);
 
-        sr_draw_quad_indexed(fb_ptr,
+        draw_quad(fb_ptr,
             PV(W+0.01f, wy,    wz-whw, 0,1, 1,0,0),
             PV(W+0.01f, wy,    wz+whw, 1,1, 1,0,0),
             PV(W+0.01f, wy+wh, wz+whw, 1,0, 1,0,0),
@@ -931,7 +966,81 @@ static void draw_wireframe_sphere(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
     }
 }
 
+/* Render depth-only scene into shadow map from light's perspective */
+static void draw_palette_scene_depth_only(sr_framebuffer *sm, const sr_mat4 *lvp) {
+    /* Ground plane */
+    {
+        float G = 10.0f;
+        int tiles = 6;
+        float ts = (2.0f * G) / tiles;
+        for (int tz = 0; tz < tiles; tz++) {
+            for (int tx = 0; tx < tiles; tx++) {
+                float x0 = -G + tx * ts, x1 = x0 + ts;
+                float z0 = -G + tz * ts, z1 = z0 + ts;
+                sr_draw_quad_depth_only(sm,
+                    sr_vert(x0, 0, z1, 0, 0),
+                    sr_vert(x0, 0, z0, 0, 0),
+                    sr_vert(x1, 0, z0, 0, 0),
+                    sr_vert(x1, 0, z1, 0, 0),
+                    lvp);
+            }
+        }
+    }
+    /* House at origin */
+    {
+        float W = 2.0f, D = 1.5f, WH = 2.0f, RP = 3.0f;
+        float slope = (RP - WH) / W;
+        float oh = 0.3f, ey = WH - oh * slope;
+        #define DV(x,y,z) sr_vert(x,y,z, 0,0)
+
+        /* Walls */
+        sr_draw_quad_depth_only(sm, DV(-W,0,-D), DV(W,0,-D), DV(W,WH,-D), DV(-W,WH,-D), lvp);
+        sr_draw_quad_depth_only(sm, DV(-W,0,D), DV(-W,0,-D), DV(-W,WH,-D), DV(-W,WH,D), lvp);
+        sr_draw_quad_depth_only(sm, DV(W,0,-D), DV(W,0,D), DV(W,WH,D), DV(W,WH,-D), lvp);
+        sr_draw_quad_depth_only(sm, DV(W,0,D), DV(-W,0,D), DV(-W,WH,D), DV(W,WH,D), lvp);
+
+        /* Gable ends */
+        sr_draw_triangle_depth_only(sm, DV(W,WH,D), DV(-W,WH,D), DV(0,RP,D), lvp);
+        sr_draw_triangle_depth_only(sm, DV(-W,WH,-D), DV(W,WH,-D), DV(0,RP,-D), lvp);
+
+        /* Roof slopes (both sides) */
+        sr_draw_quad_depth_only(sm, DV(0,RP,-D-oh), DV(0,RP,D+oh), DV(-W-oh,ey,D+oh), DV(-W-oh,ey,-D-oh), lvp);
+        sr_draw_quad_depth_only(sm, DV(0,RP,D+oh), DV(0,RP,-D-oh), DV(W+oh,ey,-D-oh), DV(W+oh,ey,D+oh), lvp);
+
+        #undef DV
+    }
+}
+
+/* Pixel lighting callback wrapper for pal_vertex_intensity */
+static float pixel_light_callback(float px, float py, float pz,
+                                   float nx, float ny, float nz) {
+    return pal_vertex_intensity(px, py, pz, nx, ny, nz);
+}
+
 static void draw_palette_scene(sr_framebuffer *fb_ptr, const sr_mat4 *vp, float t) {
+    /* Set up orbiting point light FIRST (needed for both vertex and pixel lighting) */
+    num_lights = 1;
+    float orbit_radius = 5.0f;
+    float lx = cosf(t * 1.2f) * orbit_radius;
+    float lz = sinf(t * 1.2f) * orbit_radius;
+    float ly = 2.5f + sinf(t * 0.7f) * 1.0f;
+    lights[0] = (point_light){ lx, ly, lz,
+        2.0f * pal_light_mult, 1.8f * pal_light_mult, 1.2f * pal_light_mult, 12.0f };
+    build_light_grid();
+
+    /* Shadow map pass */
+    if (shadows_enabled) {
+        sr_mat4 light_view = sr_mat4_lookat(sr_v3(lx, ly, lz), sr_v3(0, 0, 0), sr_v3(0, 1, 0));
+        sr_mat4 light_proj = sr_mat4_perspective(1.5f, 1.0f, 0.5f, 30.0f);
+        light_vp = sr_mat4_mul(light_proj, light_view);
+        sr_framebuffer_clear(&shadow_fb, 0, 1.0f);
+        draw_palette_scene_depth_only(&shadow_fb, &light_vp);
+    }
+
+    /* Set pixel lighting callback */
+    if (pixel_lighting)
+        sr_set_pixel_light_fn(pixel_light_callback);
+
     /* Ground plane (grass) */
     {
         float G = 10.0f;
@@ -947,12 +1056,21 @@ static void draw_palette_scene(sr_framebuffer *fb_ptr, const sr_mat4 *vp, float 
                 float i11 = pal_vertex_intensity(x1, 0, z1, 0,1,0);
                 float i01 = pal_vertex_intensity(x0, 0, z1, 0,1,0);
 
-                sr_draw_quad_indexed(fb_ptr,
-                    sr_vert_c(x0, 0, z1, 0,ts, pal_intensity_color(i01)),
-                    sr_vert_c(x0, 0, z0, 0, 0, pal_intensity_color(i00)),
-                    sr_vert_c(x1, 0, z0, ts,0, pal_intensity_color(i10)),
-                    sr_vert_c(x1, 0, z1, ts,ts, pal_intensity_color(i11)),
-                    &itextures[ITEX_GRASS], vp);
+                if (pixel_lighting) {
+                    sr_draw_quad_indexed_pixellit(fb_ptr,
+                        sr_vert_world(x0, 0, z1, 0,ts, pal_intensity_color(i01), x0,0,z1, 0,1,0),
+                        sr_vert_world(x0, 0, z0, 0, 0, pal_intensity_color(i00), x0,0,z0, 0,1,0),
+                        sr_vert_world(x1, 0, z0, ts,0, pal_intensity_color(i10), x1,0,z0, 0,1,0),
+                        sr_vert_world(x1, 0, z1, ts,ts, pal_intensity_color(i11), x1,0,z1, 0,1,0),
+                        &itextures[ITEX_GRASS], vp);
+                } else {
+                    sr_draw_quad_indexed(fb_ptr,
+                        sr_vert_c(x0, 0, z1, 0,ts, pal_intensity_color(i01)),
+                        sr_vert_c(x0, 0, z0, 0, 0, pal_intensity_color(i00)),
+                        sr_vert_c(x1, 0, z0, ts,0, pal_intensity_color(i10)),
+                        sr_vert_c(x1, 0, z1, ts,ts, pal_intensity_color(i11)),
+                        &itextures[ITEX_GRASS], vp);
+                }
             }
         }
     }
@@ -960,16 +1078,6 @@ static void draw_palette_scene(sr_framebuffer *fb_ptr, const sr_mat4 *vp, float 
     /* Single house at origin */
     sr_mat4 mvp = *vp;  /* house at origin, no transform */
     draw_palette_house(fb_ptr, &mvp, 0.0f, 0.0f, 0.0f);
-
-    /* Orbiting point light */
-    num_lights = 1;
-    float orbit_radius = 5.0f;
-    float lx = cosf(t * 1.2f) * orbit_radius;
-    float lz = sinf(t * 1.2f) * orbit_radius;
-    float ly = 2.5f + sinf(t * 0.7f) * 1.0f;
-    lights[0] = (point_light){ lx, ly, lz,
-        2.0f * pal_light_mult, 1.8f * pal_light_mult, 1.2f * pal_light_mult, 12.0f };
-    build_light_grid();
 
     /* Draw wireframe sphere at light position */
     draw_wireframe_sphere(fb_ptr, vp, lx, ly, lz, 0.3f, 0xFF55CCFF, 16);
@@ -1004,9 +1112,16 @@ static void draw_stats(sr_framebuffer *fb_ptr, int tris) {
                             FB_WIDTH - 30, 3, "REC", 0xFF0000FF, shadow);
     }
 
-    /* TAB hint */
-    sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
-                        FB_WIDTH - 78, FB_HEIGHT - 12, "TAB = MENU", 0xFF999999, shadow);
+    /* MENU button (top-right corner) */
+    {
+        int mbx = FB_WIDTH - 32, mby = 3, mbw = 30, mbh = 11;
+        uint32_t *px = fb_ptr->color;
+        for (int ry = mby; ry < mby + mbh && ry < FB_HEIGHT; ry++)
+            for (int rx = mbx; rx < mbx + mbw && rx < FB_WIDTH; rx++)
+                if (ry >= 0 && rx >= 0) px[ry * FB_WIDTH + rx] = 0xC0000000;
+        sr_draw_text_shadow(px, fb_ptr->width, fb_ptr->height,
+                            mbx + 3, mby + 2, "MENU", 0xFF999999, shadow);
+    }
 
     /* Night mode hint (neighborhood only) */
     if (current_scene == SCENE_NEIGHBORHOOD) {
@@ -1015,23 +1130,67 @@ static void draw_stats(sr_framebuffer *fb_ptr, int tris) {
                             3, FB_HEIGHT - 12, ntxt, 0xFF999999, shadow);
     }
 
-    /* Palette scene lighting controls HUD */
+    /* Palette scene lighting controls — clickable buttons */
     if (current_scene == SCENE_PALETTE_HOUSE) {
-        uint32_t sel_col = 0xFF55CCFF;  /* highlight selected */
-        uint32_t dim_col = 0xFF999999;
+        uint32_t sel_col  = 0xFF55CCFF;
+        uint32_t dim_col  = 0xFF999999;
+        uint32_t btn_bg   = 0xC0000000;  /* semi-transparent black */
+        uint32_t btn_hi   = 0xC0332200;  /* highlighted button bg */
+        int W = fb_ptr->width, H = fb_ptr->height;
+        uint32_t *px = fb_ptr->color;
 
+        /* Helper: draw filled rect */
+        #define DRAW_RECT(x0,y0,x1,y1,col) do { \
+            for (int ry = (y0); ry < (y1) && ry < H; ry++) \
+                for (int rx = (x0); rx < (x1) && rx < W; rx++) \
+                    if (ry >= 0 && rx >= 0) px[ry * W + rx] = (col); \
+        } while(0)
+
+        /* Button layout: left column at x=2, each button 10px tall, 2px gap */
+        int bx = 2, bw = 100;
+        int by0 = H - 62;  /* AMB row */
+        int by1 = H - 50;  /* LIGHT row */
+        int by2 = H - 38;  /* SHADING row */
+        int by3 = H - 26;  /* SHADOWS row */
+        int bh = 11;
+
+        /* AMB: value [-] [+] */
+        DRAW_RECT(bx, by0, bx + bw, by0 + bh, adjusting_ambient ? btn_hi : btn_bg);
         snprintf(buf, sizeof(buf), "AMB: %.2f", pal_ambient);
-        sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
-                            3, FB_HEIGHT - 42, buf,
+        sr_draw_text_shadow(px, W, H, bx + 2, by0 + 2, buf,
                             adjusting_ambient ? sel_col : dim_col, shadow);
+        /* [-] button */
+        DRAW_RECT(bx + bw + 2, by0, bx + bw + 14, by0 + bh, btn_bg);
+        sr_draw_text_shadow(px, W, H, bx + bw + 4, by0 + 2, "-", white, shadow);
+        /* [+] button */
+        DRAW_RECT(bx + bw + 16, by0, bx + bw + 28, by0 + bh, btn_bg);
+        sr_draw_text_shadow(px, W, H, bx + bw + 18, by0 + 2, "+", white, shadow);
 
+        /* LIGHT: value [-] [+] */
+        DRAW_RECT(bx, by1, bx + bw, by1 + bh, !adjusting_ambient ? btn_hi : btn_bg);
         snprintf(buf, sizeof(buf), "LIGHT: %.1fx", pal_light_mult);
-        sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
-                            3, FB_HEIGHT - 32, buf,
+        sr_draw_text_shadow(px, W, H, bx + 2, by1 + 2, buf,
                             !adjusting_ambient ? sel_col : dim_col, shadow);
+        DRAW_RECT(bx + bw + 2, by1, bx + bw + 14, by1 + bh, btn_bg);
+        sr_draw_text_shadow(px, W, H, bx + bw + 4, by1 + 2, "-", white, shadow);
+        DRAW_RECT(bx + bw + 16, by1, bx + bw + 28, by1 + bh, btn_bg);
+        sr_draw_text_shadow(px, W, H, bx + bw + 18, by1 + 2, "+", white, shadow);
 
-        sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
-                            3, FB_HEIGHT - 12, "L=TOGGLE +/-=ADJ", 0xFF999999, shadow);
+        /* SHADING toggle button */
+        int sw = pixel_lighting ? 84 : 90;
+        DRAW_RECT(bx, by2, bx + sw, by2 + bh, pixel_lighting ? btn_hi : btn_bg);
+        snprintf(buf, sizeof(buf), "SHADING: %s", pixel_lighting ? "PIXEL" : "VERTEX");
+        sr_draw_text_shadow(px, W, H, bx + 2, by2 + 2, buf,
+                            pixel_lighting ? sel_col : dim_col, shadow);
+
+        /* SHADOWS toggle button */
+        int shw = shadows_enabled ? 72 : 78;
+        DRAW_RECT(bx, by3, bx + shw, by3 + bh, shadows_enabled ? btn_hi : btn_bg);
+        snprintf(buf, sizeof(buf), "SHADOWS: %s", shadows_enabled ? "ON" : "OFF");
+        sr_draw_text_shadow(px, W, H, bx + 2, by3 + 2, buf,
+                            shadows_enabled ? sel_col : dim_col, shadow);
+
+        #undef DRAW_RECT
     }
 }
 
@@ -1155,6 +1314,7 @@ static void init(void) {
     });
 
     fb = sr_framebuffer_create(FB_WIDTH, FB_HEIGHT);
+    shadow_fb = sr_framebuffer_create(SHADOW_SIZE, SHADOW_SIZE);
 
     fb_image = sg_make_image(&(sg_image_desc){
         .width  = FB_WIDTH,
@@ -1390,6 +1550,7 @@ static void cleanup(void) {
     for (int i = 0; i < ITEX_COUNT; i++)
         sr_indexed_free(&itextures[i]);
     sr_framebuffer_destroy(&fb);
+    sr_framebuffer_destroy(&shadow_fb);
     sg_shutdown();
 #ifdef _WIN32
     timeEndPeriod(1);
@@ -1436,8 +1597,66 @@ static void handle_tap(float sx, float sy) {
             }
         }
     } else {
-        /* Tap while running → back to menu */
-        app_state = STATE_MENU;
+        /* MENU button check (all scenes, top-right) */
+        int mbx = FB_WIDTH - 32, mby = 3, mbw = 30, mbh = 11;
+        if (fx >= mbx && fx <= mbx + mbw && fy >= mby && fy <= mby + mbh) {
+            app_state = STATE_MENU;
+            return;
+        }
+
+        if (current_scene == SCENE_PALETTE_HOUSE) {
+        /* Palette scene button hit testing */
+        int bx = 2, bw = 100, bh = 11;
+        int by0 = FB_HEIGHT - 62;   /* AMB row */
+        int by1 = FB_HEIGHT - 50;   /* LIGHT row */
+        int by2 = FB_HEIGHT - 38;   /* SHADING row */
+        int by3 = FB_HEIGHT - 26;   /* SHADOWS row */
+
+        /* AMB label click → select ambient adjustment */
+        if (fx >= bx && fx <= bx + bw && fy >= by0 && fy <= by0 + bh) {
+            adjusting_ambient = true;
+            return;
+        }
+        /* AMB [-] */
+        if (fx >= bx + bw + 2 && fx <= bx + bw + 14 && fy >= by0 && fy <= by0 + bh) {
+            pal_ambient -= 0.02f;
+            if (pal_ambient < 0.0f) pal_ambient = 0.0f;
+            return;
+        }
+        /* AMB [+] */
+        if (fx >= bx + bw + 16 && fx <= bx + bw + 28 && fy >= by0 && fy <= by0 + bh) {
+            pal_ambient += 0.02f;
+            if (pal_ambient > 1.0f) pal_ambient = 1.0f;
+            return;
+        }
+        /* LIGHT label click → select light adjustment */
+        if (fx >= bx && fx <= bx + bw && fy >= by1 && fy <= by1 + bh) {
+            adjusting_ambient = false;
+            return;
+        }
+        /* LIGHT [-] */
+        if (fx >= bx + bw + 2 && fx <= bx + bw + 14 && fy >= by1 && fy <= by1 + bh) {
+            pal_light_mult -= 0.1f;
+            if (pal_light_mult < 0.0f) pal_light_mult = 0.0f;
+            return;
+        }
+        /* LIGHT [+] */
+        if (fx >= bx + bw + 16 && fx <= bx + bw + 28 && fy >= by1 && fy <= by1 + bh) {
+            pal_light_mult += 0.1f;
+            if (pal_light_mult > 5.0f) pal_light_mult = 5.0f;
+            return;
+        }
+        /* SHADING toggle */
+        if (fx >= bx && fx <= bx + 90 && fy >= by2 && fy <= by2 + bh) {
+            pixel_lighting = !pixel_lighting;
+            return;
+        }
+        /* SHADOWS toggle */
+        if (fx >= bx && fx <= bx + 78 && fy >= by3 && fy <= by3 + bh) {
+            shadows_enabled = !shadows_enabled;
+            return;
+        }
+        } /* end palette scene buttons */
     }
 }
 
@@ -1527,6 +1746,16 @@ static void event(const sapp_event *ev) {
         case SAPP_KEYCODE_L:
             if (current_scene == SCENE_PALETTE_HOUSE) {
                 adjusting_ambient = !adjusting_ambient;
+            }
+            break;
+        case SAPP_KEYCODE_V:
+            if (current_scene == SCENE_PALETTE_HOUSE) {
+                pixel_lighting = !pixel_lighting;
+            }
+            break;
+        case SAPP_KEYCODE_S:
+            if (current_scene == SCENE_PALETTE_HOUSE) {
+                shadows_enabled = !shadows_enabled;
             }
             break;
         case SAPP_KEYCODE_EQUAL:        /* + key (=/+) */
