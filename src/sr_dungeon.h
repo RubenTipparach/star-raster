@@ -285,7 +285,7 @@ static void dng_build_visibility(const dng_player *p, const sr_dungeon *d) {
     int qhead = 0, qtail = 0;
 
     /* Visited array for BFS (separate from dng_vis — tracks open cells we've queued) */
-    bool visited[DNG_GRID_H + 2][DNG_GRID_W + 2];
+    static bool visited[DNG_GRID_H + 2][DNG_GRID_W + 2];
     memset(visited, 0, sizeof(visited));
 
     /* Seed with player cell */

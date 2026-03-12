@@ -21,9 +21,11 @@ emcc -O2 -std=c99 ^
     -s WASM=1 ^
     -s ALLOW_MEMORY_GROWTH=1 ^
     -s TOTAL_MEMORY=67108864 ^
+    -s STACK_SIZE=1048576 ^
     -I src ^
     -I third_party ^
     --preload-file assets ^
+    --preload-file config ^
     src/sr_main.c ^
     src/sr_raster.c ^
     src/sr_texture.c ^
