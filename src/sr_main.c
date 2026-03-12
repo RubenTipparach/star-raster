@@ -1381,7 +1381,7 @@ static void draw_dungeon_scene(sr_framebuffer *fb_ptr, const sr_mat4 *vp) {
                 }
             } else {
                 /* Open cell */
-                bool is_up_stairs = (gx == d->stairs_gx && gy == d->stairs_gy);
+                bool is_up_stairs = (d->has_up && gx == d->stairs_gx && gy == d->stairs_gy);
                 bool is_down_stairs = (d->has_down && gx == d->down_gx && gy == d->down_gy);
 
                 if (is_up_stairs || is_down_stairs) {
@@ -1637,7 +1637,7 @@ static void draw_dungeon_minimap(sr_framebuffer *fb_ptr) {
     }
 
     /* Stairs markers */
-    {
+    if (d->has_up) {
         int sx = d->stairs_gx, sy = d->stairs_gy;
         int px0 = mx + (sx - 1) * scale, py0 = my + (sy - 1) * scale;
         for (int dy = 0; dy < scale; dy++)
@@ -2030,6 +2030,7 @@ static void init(void) {
 }
 
 static void frame(void) {
+    if (frame_counter == 0) printf("[DBG] frame() start\n");
     double dt = sapp_frame_duration();
     time_acc += dt;
     frame_counter++;
@@ -2089,6 +2090,7 @@ static void frame(void) {
     else
         clear_color = FOG_COLOR;
     sr_framebuffer_clear(&fb, clear_color, 1.0f);
+    if (frame_counter <= 1) printf("[DBG] fb cleared, state=%d scene=%d\n", app_state, current_scene);
 
     if (app_state == STATE_RUNNING) {
         switch (current_scene) {
@@ -2115,7 +2117,7 @@ static void frame(void) {
                     /* Check stairs */
                     sr_dungeon *dd = dng_state.dungeon;
                     dng_player *pp = &dng_state.player;
-                    bool on_up = (pp->gx == dd->stairs_gx && pp->gy == dd->stairs_gy);
+                    bool on_up = (dd->has_up && pp->gx == dd->stairs_gx && pp->gy == dd->stairs_gy);
                     bool on_down = (dd->has_down && pp->gx == dd->down_gx && pp->gy == dd->down_gy);
                     if (dng_state.on_stairs) {
                         if (!on_up && !on_down) dng_state.on_stairs = false;
@@ -2137,10 +2139,13 @@ static void frame(void) {
     }
 
     int tris = sr_stats_tri_count();
+    if (frame_counter <= 1) printf("[DBG] pre draw_stats\n");
     draw_stats(&fb, tris);
+    if (frame_counter <= 1) printf("[DBG] post draw_stats\n");
 
     if (app_state == STATE_MENU)
         draw_menu(&fb);
+    if (frame_counter <= 1) printf("[DBG] post draw_menu\n");
 
     /* ── GIF capture (time-based, 24fps) ─────────────────────── */
     if (sr_gif_is_recording()) {
@@ -2165,9 +2170,11 @@ static void frame(void) {
     }
 
     /* ── Upload and display ──────────────────────────────────── */
+    if (frame_counter <= 1) printf("[DBG] pre sg_update_image\n");
     sg_update_image(fb_image, &(sg_image_data){
         .mip_levels[0] = { .ptr = fb.color, .size = FB_WIDTH * FB_HEIGHT * 4 }
     });
+    if (frame_counter <= 1) printf("[DBG] post sg_update_image\n");
 
     sg_begin_pass(&(sg_pass){
         .action = {

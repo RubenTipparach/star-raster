@@ -49,6 +49,7 @@ typedef struct {
     int w, h;
     int spawn_gx, spawn_gy;
     int stairs_gx, stairs_gy, stairs_dir;   /* up-stairs */
+    bool has_up;
     int down_gx, down_gy, down_dir;         /* down-stairs (-1 if none) */
     bool has_down;
 } sr_dungeon;
@@ -78,7 +79,7 @@ static inline bool dng_is_open(const sr_dungeon *d, int gx, int gy) {
 /* Up-stairs can only be entered from the entry side (opposite of stairs_dir) */
 static bool dng_can_enter(const sr_dungeon *d, int fx, int fy, int tx, int ty) {
     if (dng_is_wall(d, tx, ty)) return false;
-    if (tx == d->stairs_gx && ty == d->stairs_gy) {
+    if (d->has_up && tx == d->stairs_gx && ty == d->stairs_gy) {
         int dir = d->stairs_dir;
         int entry_gx = d->stairs_gx - dng_dir_dx[dir];
         int entry_gy = d->stairs_gy - dng_dir_dz[dir];
@@ -162,12 +163,14 @@ static void dng_find_down_stairs(sr_dungeon *d, const dng_room *room,
     *out_x = room->cx; *out_y = room->cy;
 }
 
-static void dng_generate(sr_dungeon *d, int w, int h, bool has_down_stairs, uint32_t seed) {
+static void dng_generate(sr_dungeon *d, int w, int h, bool has_down_stairs, bool has_up_stairs, uint32_t seed) {
     dng_rng_seed(seed);
     memset(d, 0, sizeof(*d));
     d->w = w; d->h = h;
     d->down_gx = -1; d->down_gy = -1;
+    d->stairs_gx = -1; d->stairs_gy = -1;
     d->has_down = has_down_stairs;
+    d->has_up = has_up_stairs;
 
     /* Fill with walls */
     for (int y = 1; y <= h; y++)
@@ -209,14 +212,16 @@ static void dng_generate(sr_dungeon *d, int w, int h, bool has_down_stairs, uint
     d->spawn_gx = rooms[0].cx;
     d->spawn_gy = rooms[0].cy;
 
-    /* Up-stairs in farthest room */
-    int best_idx = num_rooms - 1, best_dist = 0;
-    for (int i = 1; i < num_rooms; i++) {
-        int dist = abs(rooms[i].cx - rooms[0].cx) + abs(rooms[i].cy - rooms[0].cy);
-        if (dist > best_dist) { best_dist = dist; best_idx = i; }
+    /* Up-stairs in farthest room (skip on last floor) */
+    if (has_up_stairs) {
+        int best_idx = num_rooms - 1, best_dist = 0;
+        for (int i = 1; i < num_rooms; i++) {
+            int dist = abs(rooms[i].cx - rooms[0].cx) + abs(rooms[i].cy - rooms[0].cy);
+            if (dist > best_dist) { best_dist = dist; best_idx = i; }
+        }
+        dng_find_up_stairs(d, &rooms[best_idx],
+                           &d->stairs_gx, &d->stairs_gy, &d->stairs_dir);
     }
-    dng_find_up_stairs(d, &rooms[best_idx],
-                       &d->stairs_gx, &d->stairs_gy, &d->stairs_dir);
 
     /* Down-stairs */
     if (has_down_stairs) {
@@ -359,7 +364,7 @@ static void dng_game_init(dng_game *g) {
     g->current_floor = 0;
 
     /* Generate floor 0 */
-    dng_generate(&g->floors[0], DNG_GRID_W, DNG_GRID_H, false,
+    dng_generate(&g->floors[0], DNG_GRID_W, DNG_GRID_H, false, true,
                  g->seed_base);
     g->floor_generated[0] = true;
     g->dungeon = &g->floors[0];
@@ -372,8 +377,9 @@ static void dng_go_up(dng_game *g) {
     if (g->current_floor >= DNG_MAX_FLOORS) { g->current_floor--; return; }
 
     if (!g->floor_generated[g->current_floor]) {
+        bool is_last = (g->current_floor >= DNG_MAX_FLOORS - 1);
         dng_generate(&g->floors[g->current_floor], DNG_GRID_W, DNG_GRID_H,
-                     true, g->seed_base + (uint32_t)g->current_floor * 777);
+                     true, !is_last, g->seed_base + (uint32_t)g->current_floor * 777);
         g->floor_generated[g->current_floor] = true;
     }
     g->dungeon = &g->floors[g->current_floor];

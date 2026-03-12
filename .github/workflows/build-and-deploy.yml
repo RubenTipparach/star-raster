@@ -36,9 +36,11 @@ jobs:
             -s WASM=1 \
             -s ALLOW_MEMORY_GROWTH=1 \
             -s TOTAL_MEMORY=67108864 \
+            -s STACK_SIZE=1048576 \
             -I src \
             -I third_party \
             --preload-file assets \
+            --preload-file config \
             src/sr_main.c \
             src/sr_raster.c \
             src/sr_texture.c \
@@ -89,6 +91,7 @@ jobs:
           mkdir -p starraster-win
           cp build/starraster.exe starraster-win/
           cp -r assets starraster-win/assets
+          cp -r config starraster-win/config
           cd starraster-win && 7z a -tzip ../starraster-windows.zip . && cd ..
 
       - name: Upload Windows artifact
