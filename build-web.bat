@@ -15,13 +15,14 @@ if %errorlevel% neq 0 (
 
 if not exist "build\web" mkdir "build\web"
 
-emcc -O2 -std=c99 ^
+emcc -O2 -std=c99 -g ^
     -msimd128 ^
     -s USE_WEBGL2=1 ^
     -s WASM=1 ^
     -s ALLOW_MEMORY_GROWTH=1 ^
     -s TOTAL_MEMORY=67108864 ^
     -s STACK_SIZE=1048576 ^
+    -s ASSERTIONS=2 ^
     -I src ^
     -I third_party ^
     --preload-file assets ^

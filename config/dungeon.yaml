@@ -19,5 +19,5 @@ fog:
   levels: 5
   start:     [1.5, 3.0, 4.0, 5.5, 7.0]   # depth thresholds per band
   intensity: [0.9, 0.65, 0.4, 0.2, 0.05]  # shade brightness per band (1=bright, 0=black)
-  density:   [0.25, 0.35, 0.5, 0.75, 1.0] # dither coverage per band (0=clear, 1=solid)
+  density:   [0.25, 0.5, 0.6, 0.7, 1.0] # dither coverage per band (0=clear, 1=solid)
   stop: 8.0                                # max render distance in cells
