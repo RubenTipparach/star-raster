@@ -338,11 +338,12 @@ static void dng_build_visibility(const dng_player *p, const sr_dungeon *d) {
 typedef struct {
     bool active;
     bool direction_up;  /* true=climbing up, false=climbing down */
-    int phase;          /* 0=ease_out, 1=ease_in */
+    int phase;          /* 0=walk_in, 1=walk_out */
     int timer;
     float start_x, start_z, start_y, start_angle;
     float end_x, end_z, end_angle;
     float arrival_y;
+    float exit_x, exit_z;  /* walk-out destination on new floor */
 } dng_climb;
 
 /* ── Game state ──────────────────────────────────────────────────── */
@@ -445,14 +446,32 @@ static bool dng_update_climb(dng_game *g) {
     if (!c->active) return false;
     c->timer++;
 
-    if (c->phase == 0) { /* ease_out */
+    if (c->phase == 0) { /* walk into stairs + rise/sink */
         float peak = c->direction_up ? DNG_CLIMB_UP_HEIGHT : -DNG_CLIMB_DOWN_HEIGHT;
         float t = (float)c->timer / DNG_CLIMB_MOVE_FRAMES;
         if (t >= 1.0f) {
             t = 1.0f;
-            /* Teleport to new floor */
+            /* Teleport to new floor — player_init places at adjacent cell */
             if (c->direction_up) dng_go_up(g);
             else dng_go_down(g);
+
+            /* Exit position = where player_init placed us (adjacent to stairs) */
+            c->exit_x = g->player.x;
+            c->exit_z = g->player.z;
+
+            /* Start walk-out FROM the stairs cell itself */
+            int stair_gx, stair_gy;
+            if (c->direction_up) {
+                stair_gx = g->dungeon->down_gx;
+                stair_gy = g->dungeon->down_gy;
+            } else {
+                stair_gx = g->dungeon->stairs_gx;
+                stair_gy = g->dungeon->stairs_gy;
+            }
+            c->start_x = (stair_gx - 0.5f) * DNG_CELL_SIZE;
+            c->start_z = (stair_gy - 0.5f) * DNG_CELL_SIZE;
+            g->player.x = c->start_x;
+            g->player.z = c->start_z;
 
             float arrival_y = c->direction_up ? -DNG_CLIMB_UP_HEIGHT : DNG_CLIMB_DOWN_HEIGHT;
             c->phase = 1;
@@ -461,20 +480,28 @@ static bool dng_update_climb(dng_game *g) {
             c->arrival_y = arrival_y;
             return false;
         }
-        float st = dng_smoothstep(t);
+        /* Map phase 0 time to first half of smoothstep: 0→0.5 */
+        float st = dng_smoothstep(t * 0.5f) * 2.0f;
         g->player.x = c->start_x + (c->end_x - c->start_x) * st;
         g->player.z = c->start_z + (c->end_z - c->start_z) * st;
         g->player.y = c->start_y + (peak - c->start_y) * st;
         g->player.angle = c->start_angle + (c->end_angle - c->start_angle) * st;
-    } else { /* ease_in */
+    } else { /* walk out of stairs + settle Y */
         float t = (float)c->timer / DNG_CLIMB_SETTLE_FRAMES;
         if (t >= 1.0f) {
+            g->player.x = c->exit_x;
+            g->player.z = c->exit_z;
+            g->player.target_x = c->exit_x;
+            g->player.target_z = c->exit_z;
             g->player.y = 0;
             c->active = false;
             g->on_stairs = true;
             return true;
         }
-        float st = dng_smoothstep(t);
+        /* Map phase 1 time to second half of smoothstep: 0.5→1 */
+        float st = (dng_smoothstep(0.5f + t * 0.5f) - 0.5f) * 2.0f;
+        g->player.x = c->start_x + (c->exit_x - c->start_x) * st;
+        g->player.z = c->start_z + (c->exit_z - c->start_z) * st;
         g->player.y = c->arrival_y * (1.0f - st);
     }
     return false;

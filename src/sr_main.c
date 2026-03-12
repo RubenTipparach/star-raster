@@ -1151,6 +1151,7 @@ static int dng_play_state = DNG_STATE_PLAYING;
 
 /* Lighting mode: 0 = torch (point light + ambient), 1 = depth fog (dithered bands) */
 static int dng_light_mode = 0;
+static bool dng_show_info = false;
 
 
 /* ── Dungeon torch lighting (pixel-lit callback) ─────────────────── */
@@ -1263,6 +1264,18 @@ static void dng_draw_wall(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
             sr_vert_c(dx,dy,dz, 0,v_scale, cd),
             tex, mvp);
     }
+}
+
+/* Draw a wall quad visible from both sides (for stair side panels) */
+static void dng_draw_wall_ds(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
+                              float ax, float ay, float az,
+                              float bx, float by, float bz,
+                              float cx, float cy, float cz,
+                              float dx, float dy, float dz,
+                              const sr_indexed_texture *tex,
+                              float nx, float ny, float nz) {
+    dng_draw_wall(fb_ptr, mvp, ax,ay,az, bx,by,bz, cx,cy,cz, dx,dy,dz, tex, nx,ny,nz);
+    dng_draw_wall(fb_ptr, mvp, bx,by,bz, ax,ay,az, dx,dy,dz, cx,cy,cz, tex, -nx,-ny,-nz);
 }
 
 /* Draw a horizontal quad (floor or ceiling) with proper lighting */
@@ -1427,15 +1440,17 @@ static void draw_dungeon_scene(sr_framebuffer *fb_ptr, const sr_mat4 *vp) {
                                 x0,riser_top,sz1, x1,riser_top,sz1,
                                 x1,riser_bot,sz1, x0,riser_bot,sz1,
                                 stex, riser_nx[0],0,riser_nz[0]);
-                            /* Side walls (west & east) */
-                            dng_draw_wall(fb_ptr, &mvp,
-                                x0,side_top,sz0, x0,side_top,sz1,
-                                x0,side_bot,sz1, x0,side_bot,sz0,
-                                stex, -1,0,0);
-                            dng_draw_wall(fb_ptr, &mvp,
-                                x1,side_top,sz1, x1,side_top,sz0,
-                                x1,side_bot,sz0, x1,side_bot,sz1,
-                                stex, 1,0,0);
+                            /* Side walls (west & east) — up-stairs only */
+                            if (!going_down) {
+                                dng_draw_wall_ds(fb_ptr, &mvp,
+                                    x0,side_top,sz0, x0,side_top,sz1,
+                                    x0,side_bot,sz1, x0,side_bot,sz0,
+                                    stex, -1,0,0);
+                                dng_draw_wall_ds(fb_ptr, &mvp,
+                                    x1,side_top,sz1, x1,side_top,sz0,
+                                    x1,side_bot,sz0, x1,side_bot,sz1,
+                                    stex, 1,0,0);
+                            }
                         } else if (sdir == 1) { /* East */
                             sx0 = x0 + i * step_d;
                             sx1 = x0 + (i + 1) * step_d;
@@ -1447,15 +1462,17 @@ static void draw_dungeon_scene(sr_framebuffer *fb_ptr, const sr_mat4 *vp) {
                                 sx0,riser_top,z0, sx0,riser_top,z1,
                                 sx0,riser_bot,z1, sx0,riser_bot,z0,
                                 stex, riser_nx[1],0,riser_nz[1]);
-                            /* Side walls (north & south) */
-                            dng_draw_wall(fb_ptr, &mvp,
-                                sx0,side_top,z0, sx1,side_top,z0,
-                                sx1,side_bot,z0, sx0,side_bot,z0,
-                                stex, 0,0,-1);
-                            dng_draw_wall(fb_ptr, &mvp,
-                                sx1,side_top,z1, sx0,side_top,z1,
-                                sx0,side_bot,z1, sx1,side_bot,z1,
-                                stex, 0,0,1);
+                            /* Side walls (north & south) — up-stairs only */
+                            if (!going_down) {
+                                dng_draw_wall_ds(fb_ptr, &mvp,
+                                    sx0,side_top,z0, sx1,side_top,z0,
+                                    sx1,side_bot,z0, sx0,side_bot,z0,
+                                    stex, 0,0,-1);
+                                dng_draw_wall_ds(fb_ptr, &mvp,
+                                    sx1,side_top,z1, sx0,side_top,z1,
+                                    sx0,side_bot,z1, sx1,side_bot,z1,
+                                    stex, 0,0,1);
+                            }
                         } else if (sdir == 2) { /* South */
                             sz0 = z0 + i * step_d;
                             sz1 = z0 + (i + 1) * step_d;
@@ -1467,15 +1484,17 @@ static void draw_dungeon_scene(sr_framebuffer *fb_ptr, const sr_mat4 *vp) {
                                 x1,riser_top,sz0, x0,riser_top,sz0,
                                 x0,riser_bot,sz0, x1,riser_bot,sz0,
                                 stex, riser_nx[2],0,riser_nz[2]);
-                            /* Side walls (west & east) */
-                            dng_draw_wall(fb_ptr, &mvp,
-                                x0,side_top,sz1, x0,side_top,sz0,
-                                x0,side_bot,sz0, x0,side_bot,sz1,
-                                stex, -1,0,0);
-                            dng_draw_wall(fb_ptr, &mvp,
-                                x1,side_top,sz0, x1,side_top,sz1,
-                                x1,side_bot,sz1, x1,side_bot,sz0,
-                                stex, 1,0,0);
+                            /* Side walls (west & east) — up-stairs only */
+                            if (!going_down) {
+                                dng_draw_wall_ds(fb_ptr, &mvp,
+                                    x0,side_top,sz1, x0,side_top,sz0,
+                                    x0,side_bot,sz0, x0,side_bot,sz1,
+                                    stex, -1,0,0);
+                                dng_draw_wall_ds(fb_ptr, &mvp,
+                                    x1,side_top,sz0, x1,side_top,sz1,
+                                    x1,side_bot,sz1, x1,side_bot,sz0,
+                                    stex, 1,0,0);
+                            }
                         } else { /* West (3) */
                             sx0 = x1 - (i + 1) * step_d;
                             sx1 = x1 - i * step_d;
@@ -1487,15 +1506,17 @@ static void draw_dungeon_scene(sr_framebuffer *fb_ptr, const sr_mat4 *vp) {
                                 sx1,riser_top,z1, sx1,riser_top,z0,
                                 sx1,riser_bot,z0, sx1,riser_bot,z1,
                                 stex, riser_nx[3],0,riser_nz[3]);
-                            /* Side walls (north & south) */
-                            dng_draw_wall(fb_ptr, &mvp,
-                                sx1,side_top,z0, sx0,side_top,z0,
-                                sx0,side_bot,z0, sx1,side_bot,z0,
-                                stex, 0,0,-1);
-                            dng_draw_wall(fb_ptr, &mvp,
-                                sx0,side_top,z1, sx1,side_top,z1,
-                                sx1,side_bot,z1, sx0,side_bot,z1,
-                                stex, 0,0,1);
+                            /* Side walls (north & south) — up-stairs only */
+                            if (!going_down) {
+                                dng_draw_wall_ds(fb_ptr, &mvp,
+                                    sx1,side_top,z0, sx0,side_top,z0,
+                                    sx0,side_bot,z0, sx1,side_bot,z0,
+                                    stex, 0,0,-1);
+                                dng_draw_wall_ds(fb_ptr, &mvp,
+                                    sx0,side_top,z1, sx1,side_top,z1,
+                                    sx1,side_bot,z1, sx0,side_bot,z1,
+                                    stex, 0,0,1);
+                            }
                         }
                     }
 
@@ -2030,7 +2051,6 @@ static void init(void) {
 }
 
 static void frame(void) {
-    if (frame_counter == 0) printf("[DBG] frame() start\n");
     double dt = sapp_frame_duration();
     time_acc += dt;
     frame_counter++;
@@ -2090,7 +2110,6 @@ static void frame(void) {
     else
         clear_color = FOG_COLOR;
     sr_framebuffer_clear(&fb, clear_color, 1.0f);
-    if (frame_counter <= 1) printf("[DBG] fb cleared, state=%d scene=%d\n", app_state, current_scene);
 
     if (app_state == STATE_RUNNING) {
         switch (current_scene) {
@@ -2134,18 +2153,26 @@ static void frame(void) {
                 dng_player_update(&dng_state.player);
                 draw_dungeon_scene(&fb, &vp);
                 draw_dungeon_minimap(&fb);
+                if (dng_show_info) {
+                    static const char *dir_names[] = {"N","E","S","W"};
+                    char ibuf[64];
+                    dng_player *ip = &dng_state.player;
+                    snprintf(ibuf, sizeof(ibuf), "F%d  %s  (%d,%d)",
+                             dng_state.current_floor + 1,
+                             dir_names[ip->dir],
+                             ip->gx, ip->gy);
+                    sr_draw_text_shadow(fb.color, fb.width, fb.height,
+                                        3, 3, ibuf, 0xFFFFFFFF, 0xFF000000);
+                }
                 break;
         }
     }
 
     int tris = sr_stats_tri_count();
-    if (frame_counter <= 1) printf("[DBG] pre draw_stats\n");
     draw_stats(&fb, tris);
-    if (frame_counter <= 1) printf("[DBG] post draw_stats\n");
 
     if (app_state == STATE_MENU)
         draw_menu(&fb);
-    if (frame_counter <= 1) printf("[DBG] post draw_menu\n");
 
     /* ── GIF capture (time-based, 24fps) ─────────────────────── */
     if (sr_gif_is_recording()) {
@@ -2170,11 +2197,9 @@ static void frame(void) {
     }
 
     /* ── Upload and display ──────────────────────────────────── */
-    if (frame_counter <= 1) printf("[DBG] pre sg_update_image\n");
     sg_update_image(fb_image, &(sg_image_data){
         .mip_levels[0] = { .ptr = fb.color, .size = FB_WIDTH * FB_HEIGHT * 4 }
     });
-    if (frame_counter <= 1) printf("[DBG] post sg_update_image\n");
 
     sg_begin_pass(&(sg_pass){
         .action = {
@@ -2414,6 +2439,11 @@ static void event(const sapp_event *ev) {
         case SAPP_KEYCODE_F:
             if (current_scene == SCENE_DUNGEON) {
                 dng_light_mode = (dng_light_mode + 1) % 2;
+            }
+            break;
+        case SAPP_KEYCODE_I:
+            if (current_scene == SCENE_DUNGEON) {
+                dng_show_info = !dng_show_info;
             }
             break;
         case SAPP_KEYCODE_S:
