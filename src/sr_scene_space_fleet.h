@@ -32,9 +32,10 @@ static const char *sfa_speed_names[SFA_NUM_SPEEDS] = {
 /* Ship turn rate (radians/sec) */
 #define SFA_TURN_RATE    2.0f
 
-/* Camera */
-#define SFA_CAM_HEIGHT   40.0f
-#define SFA_CAM_TILT     (70.0f * SFA_DEG2RAD)  /* near top-down */
+/* Camera — pitched angle, behind and above the ship */
+#define SFA_CAM_HEIGHT   18.0f       /* height above ship */
+#define SFA_CAM_BACK     22.0f       /* distance behind ship */
+#define SFA_CAM_LOOK_AHEAD 8.0f     /* look-at point ahead of ship */
 
 /* Colors (0xAABBGGRR) */
 #define SFA_BG_COLOR       0xFF1A0A05   /* deep space dark */
@@ -153,11 +154,48 @@ static void sfa_update(float dt) {
     if (s->z < -SFA_ARENA_SIZE) s->z = -SFA_ARENA_SIZE;
 }
 
-/* ── Ship model (simple arrow/wedge shape) ───────────────────────── */
+/* ── 3D Ship model ───────────────────────────────────────────────── */
+/* Federation-style: saucer section (front), engineering hull (rear),
+ * two nacelles on pylons. All geometry is 3D with proper Y height. */
+
+static void sfa_draw_box(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
+                          float x0, float y0, float z0,
+                          float x1, float y1, float z1,
+                          uint32_t top_col, uint32_t side_col, uint32_t bottom_col) {
+    /* Top (+Y) */
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(x0, y1, z1, 0,0, top_col), sr_vert_c(x0, y1, z0, 0,1, top_col),
+        sr_vert_c(x1, y1, z0, 1,1, top_col), sr_vert_c(x1, y1, z1, 1,0, top_col),
+        NULL, mvp);
+    /* Bottom (-Y) */
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(x0, y0, z0, 0,0, bottom_col), sr_vert_c(x0, y0, z1, 0,1, bottom_col),
+        sr_vert_c(x1, y0, z1, 1,1, bottom_col), sr_vert_c(x1, y0, z0, 1,0, bottom_col),
+        NULL, mvp);
+    /* Front (+Z) */
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(x0, y0, z1, 0,0, side_col), sr_vert_c(x0, y1, z1, 0,1, side_col),
+        sr_vert_c(x1, y1, z1, 1,1, side_col), sr_vert_c(x1, y0, z1, 1,0, side_col),
+        NULL, mvp);
+    /* Back (-Z) */
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(x1, y0, z0, 0,0, side_col), sr_vert_c(x1, y1, z0, 0,1, side_col),
+        sr_vert_c(x0, y1, z0, 1,1, side_col), sr_vert_c(x0, y0, z0, 1,0, side_col),
+        NULL, mvp);
+    /* Left (-X) */
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(x0, y0, z0, 0,0, side_col), sr_vert_c(x0, y1, z0, 0,1, side_col),
+        sr_vert_c(x0, y1, z1, 1,1, side_col), sr_vert_c(x0, y0, z1, 1,0, side_col),
+        NULL, mvp);
+    /* Right (+X) */
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(x1, y0, z1, 0,0, side_col), sr_vert_c(x1, y1, z1, 0,1, side_col),
+        sr_vert_c(x1, y1, z0, 1,1, side_col), sr_vert_c(x1, y0, z0, 1,0, side_col),
+        NULL, mvp);
+}
 
 static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
                            sfa_ship *s) {
-    /* Model: ship facing +Z, centered at origin */
     float h = s->visual_heading;
 
     sr_mat4 model = sr_mat4_mul(
@@ -166,119 +204,285 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
     );
     sr_mat4 mvp = sr_mat4_mul(*vp, model);
 
-    /* Ship body — a pointed wedge (top-down: triangle nose + rect body) */
-    /* Hull dimensions */
-    float len = 1.5f;   /* half-length */
-    float wid = 0.5f;   /* half-width */
-    float nacelle_w = 0.15f;
-    float y = 0.0f;     /* flat on the XZ plane */
+    /* Colors */
+    uint32_t hull_top   = SFA_SHIP_COLOR;       /* 0xFFFF9933 */
+    uint32_t hull_side  = 0xFFCC7722;
+    uint32_t hull_bot   = 0xFF995511;
+    uint32_t nacelle_t  = SFA_SHIP_ACCENT;      /* 0xFFFFCC66 */
+    uint32_t nacelle_s  = 0xFFDDAA44;
+    uint32_t nacelle_b  = 0xFFBB8833;
+    uint32_t pylon_col  = 0xFF887755;
+    uint32_t bridge_col = 0xFFFFDDAA;
+    uint32_t deflector  = 0xFFFFAA33;  /* blue-ish glow (ABGR) */
 
-    /* Main hull - forward triangle (nose) */
-    sr_draw_triangle(fb_ptr,
-        sr_vert_c( 0.0f, y,  len,      0.5f, 0, SFA_SHIP_COLOR),
-        sr_vert_c(-wid,  y,  0.0f,     0,    1, SFA_SHIP_COLOR),
-        sr_vert_c( wid,  y,  0.0f,     1,    1, SFA_SHIP_COLOR),
-        NULL, &mvp);
+    /* ── Saucer section (front disc approximated as octagonal prism) ── */
+    {
+        float sr = 0.9f;    /* saucer radius */
+        float sh = 0.12f;   /* saucer half-height */
+        float sy = 0.15f;   /* saucer Y center */
+        float sz = 0.6f;    /* saucer Z center (forward) */
+        int n = 8;
+        float angles[9]; /* n+1 for closing */
+        for (int i = 0; i <= n; i++)
+            angles[i] = SFA_TWO_PI * (float)i / (float)n;
 
-    /* Main hull - aft rectangle */
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(-wid, y,  0.0f,    0, 0, SFA_SHIP_COLOR),
-        sr_vert_c(-wid, y, -len*0.6f, 0, 1, SFA_SHIP_COLOR),
-        sr_vert_c( wid, y, -len*0.6f, 1, 1, SFA_SHIP_COLOR),
-        sr_vert_c( wid, y,  0.0f,    1, 0, SFA_SHIP_COLOR),
-        NULL, &mvp);
+        for (int i = 0; i < n; i++) {
+            float c0 = cosf(angles[i]),   s0 = sinf(angles[i]);
+            float c1 = cosf(angles[i+1]), s1 = sinf(angles[i+1]);
+            float x0 = s0 * sr, z0 = c0 * sr + sz;
+            float x1 = s1 * sr, z1 = c1 * sr + sz;
 
-    /* Left nacelle */
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(-wid - nacelle_w, y, -0.2f,   0, 0, SFA_SHIP_ACCENT),
-        sr_vert_c(-wid - nacelle_w, y, -len*0.8f, 0, 1, SFA_SHIP_ACCENT),
-        sr_vert_c(-wid,             y, -len*0.8f, 1, 1, SFA_SHIP_ACCENT),
-        sr_vert_c(-wid,             y, -0.2f,   1, 0, SFA_SHIP_ACCENT),
-        NULL, &mvp);
+            /* Top face wedge */
+            sr_draw_triangle(fb_ptr,
+                sr_vert_c(0, sy + sh, sz, 0.5f, 0.5f, hull_top),
+                sr_vert_c(x0, sy + sh, z0, 0, 0, hull_top),
+                sr_vert_c(x1, sy + sh, z1, 1, 0, hull_top),
+                NULL, &mvp);
+            /* Bottom face wedge */
+            sr_draw_triangle(fb_ptr,
+                sr_vert_c(0, sy - sh, sz, 0.5f, 0.5f, hull_bot),
+                sr_vert_c(x1, sy - sh, z1, 1, 0, hull_bot),
+                sr_vert_c(x0, sy - sh, z0, 0, 0, hull_bot),
+                NULL, &mvp);
+            /* Side rim */
+            sr_draw_quad(fb_ptr,
+                sr_vert_c(x0, sy - sh, z0, 0, 0, hull_side),
+                sr_vert_c(x1, sy - sh, z1, 1, 0, hull_side),
+                sr_vert_c(x1, sy + sh, z1, 1, 1, hull_side),
+                sr_vert_c(x0, sy + sh, z0, 0, 1, hull_side),
+                NULL, &mvp);
+        }
 
-    /* Right nacelle */
-    sr_draw_quad(fb_ptr,
-        sr_vert_c( wid,             y, -0.2f,   0, 0, SFA_SHIP_ACCENT),
-        sr_vert_c( wid,             y, -len*0.8f, 0, 1, SFA_SHIP_ACCENT),
-        sr_vert_c( wid + nacelle_w, y, -len*0.8f, 1, 1, SFA_SHIP_ACCENT),
-        sr_vert_c( wid + nacelle_w, y, -0.2f,   1, 0, SFA_SHIP_ACCENT),
-        NULL, &mvp);
+        /* Bridge dome (small raised box on top of saucer) */
+        sfa_draw_box(fb_ptr, &mvp,
+                     -0.15f, sy + sh, sz - 0.15f,
+                      0.15f, sy + sh + 0.12f, sz + 0.15f,
+                     bridge_col, bridge_col, hull_top);
+    }
 
-    /* Engine glow (visible when moving) */
+    /* ── Engineering hull (rear section — elongated box) ── */
+    {
+        float ew = 0.25f;  /* half-width */
+        float eh = 0.2f;   /* half-height */
+        float ey = 0.0f;   /* Y center */
+        float ez0 = -1.4f; /* aft end */
+        float ez1 = 0.3f;  /* connects to saucer */
+
+        sfa_draw_box(fb_ptr, &mvp,
+                     -ew, ey - eh, ez0,
+                      ew, ey + eh, ez1,
+                     hull_top, hull_side, hull_bot);
+
+        /* Deflector dish (front face of engineering hull) */
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(-ew*0.6f, ey - eh*0.6f, ez1 + 0.01f, 0,0, deflector),
+            sr_vert_c(-ew*0.6f, ey + eh*0.6f, ez1 + 0.01f, 0,1, deflector),
+            sr_vert_c( ew*0.6f, ey + eh*0.6f, ez1 + 0.01f, 1,1, deflector),
+            sr_vert_c( ew*0.6f, ey - eh*0.6f, ez1 + 0.01f, 1,0, deflector),
+            NULL, &mvp);
+    }
+
+    /* ── Nacelle pylons (diagonal struts from engineering to nacelles) ── */
+    {
+        float pw = 0.06f;  /* pylon thickness */
+        /* Left pylon */
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(-0.25f, 0.0f,  -0.4f, 0,0, pylon_col),
+            sr_vert_c(-0.25f, 0.0f,  -0.7f, 0,1, pylon_col),
+            sr_vert_c(-0.85f, 0.35f, -0.7f, 1,1, pylon_col),
+            sr_vert_c(-0.85f, 0.35f, -0.4f, 1,0, pylon_col),
+            NULL, &mvp);
+        /* Pylon thickness (top face) */
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(-0.25f,      pw, -0.4f, 0,0, pylon_col),
+            sr_vert_c(-0.85f, 0.35f+pw, -0.4f, 0,1, pylon_col),
+            sr_vert_c(-0.85f, 0.35f+pw, -0.7f, 1,1, pylon_col),
+            sr_vert_c(-0.25f,      pw, -0.7f, 1,0, pylon_col),
+            NULL, &mvp);
+
+        /* Right pylon (mirror) */
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(0.25f, 0.0f,  -0.7f, 0,0, pylon_col),
+            sr_vert_c(0.25f, 0.0f,  -0.4f, 0,1, pylon_col),
+            sr_vert_c(0.85f, 0.35f, -0.4f, 1,1, pylon_col),
+            sr_vert_c(0.85f, 0.35f, -0.7f, 1,0, pylon_col),
+            NULL, &mvp);
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(0.25f,      pw, -0.7f, 0,0, pylon_col),
+            sr_vert_c(0.85f, 0.35f+pw, -0.7f, 0,1, pylon_col),
+            sr_vert_c(0.85f, 0.35f+pw, -0.4f, 1,1, pylon_col),
+            sr_vert_c(0.25f,      pw, -0.4f, 1,0, pylon_col),
+            NULL, &mvp);
+    }
+
+    /* ── Nacelles (elongated boxes, raised on pylons) ── */
+    {
+        float nw = 0.12f;  /* nacelle half-width */
+        float nh = 0.1f;   /* nacelle half-height */
+        float ny = 0.4f;   /* nacelle Y center */
+        float nz0 = -1.3f; /* aft */
+        float nz1 = 0.0f;  /* fore */
+        float nx = 0.85f;  /* X offset from center */
+
+        /* Left nacelle */
+        sfa_draw_box(fb_ptr, &mvp,
+                     -nx - nw, ny - nh, nz0,
+                     -nx + nw, ny + nh, nz1,
+                     nacelle_t, nacelle_s, nacelle_b);
+
+        /* Right nacelle */
+        sfa_draw_box(fb_ptr, &mvp,
+                      nx - nw, ny - nh, nz0,
+                      nx + nw, ny + nh, nz1,
+                     nacelle_t, nacelle_s, nacelle_b);
+
+        /* Bussard collectors (front caps — red glow) */
+        uint32_t bussard = 0xFF2222FF;  /* red in ABGR */
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(-nx-nw, ny-nh, nz1+0.01f, 0,0, bussard),
+            sr_vert_c(-nx-nw, ny+nh, nz1+0.01f, 0,1, bussard),
+            sr_vert_c(-nx+nw, ny+nh, nz1+0.01f, 1,1, bussard),
+            sr_vert_c(-nx+nw, ny-nh, nz1+0.01f, 1,0, bussard),
+            NULL, &mvp);
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(nx-nw, ny-nh, nz1+0.01f, 0,0, bussard),
+            sr_vert_c(nx-nw, ny+nh, nz1+0.01f, 0,1, bussard),
+            sr_vert_c(nx+nw, ny+nh, nz1+0.01f, 1,1, bussard),
+            sr_vert_c(nx+nw, ny-nh, nz1+0.01f, 1,0, bussard),
+            NULL, &mvp);
+    }
+
+    /* ── Engine glow (exhaust from nacelle rears) ── */
     if (s->speed_level > 0) {
-        float glow_len = 0.3f + 0.2f * s->speed_level;
+        float glow_len = 0.4f + 0.3f * s->speed_level;
         float pulse = 0.7f + 0.3f * sinf(sfa.time * 12.0f);
         uint8_t gr = (uint8_t)(255.0f * pulse);
         uint8_t gg = (uint8_t)(100.0f * pulse);
         uint32_t glow_col = 0xFF000000 | (uint32_t)(0x22) << 16 | (uint32_t)gg << 8 | gr;
 
-        /* Center engine */
+        float nx = 0.85f;
+        float ny = 0.4f;
+        float nz0 = -1.3f;
+
+        /* Left nacelle exhaust */
         sr_draw_triangle(fb_ptr,
-            sr_vert_c(0.0f,  y, -len*0.6f,          0.5f, 0, glow_col),
-            sr_vert_c(-0.15f, y, -len*0.6f - glow_len, 0, 1, 0xFF000000),
-            sr_vert_c( 0.15f, y, -len*0.6f - glow_len, 1, 1, 0xFF000000),
+            sr_vert_c(-nx, ny + 0.05f, nz0,             0.5f, 0, glow_col),
+            sr_vert_c(-nx - 0.06f, ny, nz0 - glow_len,  0, 1, 0xFF000000),
+            sr_vert_c(-nx + 0.06f, ny, nz0 - glow_len,  1, 1, 0xFF000000),
+            NULL, &mvp);
+        sr_draw_triangle(fb_ptr,
+            sr_vert_c(-nx, ny - 0.05f, nz0,             0.5f, 0, glow_col),
+            sr_vert_c(-nx + 0.06f, ny, nz0 - glow_len,  1, 1, 0xFF000000),
+            sr_vert_c(-nx - 0.06f, ny, nz0 - glow_len,  0, 1, 0xFF000000),
             NULL, &mvp);
 
-        /* Nacelle engines */
-        float nx = wid + nacelle_w * 0.5f;
+        /* Right nacelle exhaust */
         sr_draw_triangle(fb_ptr,
-            sr_vert_c(-nx,       y, -len*0.8f,           0.5f, 0, glow_col),
-            sr_vert_c(-nx-0.08f, y, -len*0.8f - glow_len*0.7f, 0, 1, 0xFF000000),
-            sr_vert_c(-nx+0.08f, y, -len*0.8f - glow_len*0.7f, 1, 1, 0xFF000000),
+            sr_vert_c(nx, ny + 0.05f, nz0,             0.5f, 0, glow_col),
+            sr_vert_c(nx + 0.06f, ny, nz0 - glow_len,  1, 1, 0xFF000000),
+            sr_vert_c(nx - 0.06f, ny, nz0 - glow_len,  0, 1, 0xFF000000),
             NULL, &mvp);
         sr_draw_triangle(fb_ptr,
-            sr_vert_c( nx,       y, -len*0.8f,           0.5f, 0, glow_col),
-            sr_vert_c( nx-0.08f, y, -len*0.8f - glow_len*0.7f, 0, 1, 0xFF000000),
-            sr_vert_c( nx+0.08f, y, -len*0.8f - glow_len*0.7f, 1, 1, 0xFF000000),
+            sr_vert_c(nx, ny - 0.05f, nz0,             0.5f, 0, glow_col),
+            sr_vert_c(nx - 0.06f, ny, nz0 - glow_len,  0, 1, 0xFF000000),
+            sr_vert_c(nx + 0.06f, ny, nz0 - glow_len,  1, 1, 0xFF000000),
+            NULL, &mvp);
+
+        /* Main impulse engine exhaust (rear of engineering hull) */
+        sr_draw_triangle(fb_ptr,
+            sr_vert_c(0, 0.05f, -1.4f,              0.5f, 0, glow_col),
+            sr_vert_c(-0.12f, 0, -1.4f - glow_len*0.6f, 0, 1, 0xFF000000),
+            sr_vert_c( 0.12f, 0, -1.4f - glow_len*0.6f, 1, 1, 0xFF000000),
             NULL, &mvp);
     }
 }
 
-/* ── Starfield background (flat grid on XZ plane) ────────────────── */
+/* ── 3D Starfield (stars scattered in a volume around the camera) ── */
 
 static void sfa_draw_starfield(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
                                  float cam_x, float cam_z) {
-    /* Draw scattered star points as tiny quads on the Y=0 plane */
-    float star_size = 0.08f;
-
-    /* Use a grid of "stars" — deterministic based on position */
+    /* Stars are distributed in a 3D volume (XYZ cube cells).
+     * Stars are billboard quads that always face the camera.
+     * Multiple depth layers create parallax. */
     float spacing = SFA_GRID_SPACING;
     float view_range = 50.0f;
+    float y_range = 30.0f;     /* vertical spread of stars */
+    float y_center = 5.0f;    /* center Y of star volume */
+
     float x_start = floorf((cam_x - view_range) / spacing) * spacing;
     float z_start = floorf((cam_z - view_range) / spacing) * spacing;
+    float y_start = floorf((y_center - y_range) / spacing) * spacing;
+
+    /* Camera up/right for billboarding (approximate — axis-aligned is fine
+     * since the camera mostly looks forward/down) */
 
     for (float gx = x_start; gx < cam_x + view_range; gx += spacing) {
         for (float gz = z_start; gz < cam_z + view_range; gz += spacing) {
-            /* Deterministic pseudo-random offset per grid cell */
-            int ix = (int)floorf(gx / spacing);
-            int iz = (int)floorf(gz / spacing);
-            uint32_t seed = (uint32_t)(ix * 73856093u ^ iz * 19349663u);
+            for (float gy = y_start; gy < y_center + y_range; gy += spacing) {
+                /* Deterministic pseudo-random per 3D cell */
+                int ix = (int)floorf(gx / spacing);
+                int iy = (int)floorf(gy / spacing);
+                int iz = (int)floorf(gz / spacing);
+                uint32_t seed = (uint32_t)(ix * 73856093u ^ iy * 83492791u ^ iz * 19349663u);
 
-            /* 2-3 stars per cell */
-            int n_stars = 1 + (seed % 3);
-            for (int si = 0; si < n_stars; si++) {
-                seed = seed * 1103515245u + 12345u + si * 7u;
-                float ox = (float)((seed >> 4) & 0xFF) / 255.0f * spacing;
-                seed = seed * 1103515245u + 12345u;
-                float oz = (float)((seed >> 4) & 0xFF) / 255.0f * spacing;
-                seed = seed * 1103515245u + 12345u;
-                float brightness = 0.15f + (float)((seed >> 4) & 0xFF) / 255.0f * 0.5f;
+                /* 1-2 stars per cell */
+                int n_stars = 1 + (seed & 1);
+                for (int si = 0; si < n_stars; si++) {
+                    seed = seed * 1103515245u + 12345u + (uint32_t)si * 7u;
+                    float ox = (float)((seed >> 4) & 0xFF) / 255.0f * spacing;
+                    seed = seed * 1103515245u + 12345u;
+                    float oy = (float)((seed >> 4) & 0xFF) / 255.0f * spacing;
+                    seed = seed * 1103515245u + 12345u;
+                    float oz = (float)((seed >> 4) & 0xFF) / 255.0f * spacing;
+                    seed = seed * 1103515245u + 12345u;
+                    float brightness = 0.12f + (float)((seed >> 4) & 0xFF) / 255.0f * 0.6f;
 
-                float sx = gx + ox;
-                float sz = gz + oz;
-                float ss = star_size * (0.5f + brightness);
+                    float star_x = gx + ox;
+                    float star_y = gy + oy;
+                    float star_z = gz + oz;
 
-                uint8_t bv = (uint8_t)(brightness * 255.0f);
-                uint32_t col = 0xFF000000 | ((uint32_t)bv << 16) | ((uint32_t)bv << 8) | bv;
+                    /* Distance fade — dimmer when far from camera XZ */
+                    float ddx = star_x - cam_x;
+                    float ddz = star_z - cam_z;
+                    float dist2 = ddx*ddx + ddz*ddz;
+                    if (dist2 > view_range * view_range) continue;
+                    float dist_fade = 1.0f - dist2 / (view_range * view_range);
+                    brightness *= dist_fade;
 
-                /* Tiny quad on the plane */
-                float y = -0.1f;
-                sr_draw_quad(fb_ptr,
-                    sr_vert_c(sx - ss, y, sz - ss, 0, 0, col),
-                    sr_vert_c(sx - ss, y, sz + ss, 0, 1, col),
-                    sr_vert_c(sx + ss, y, sz + ss, 1, 1, col),
-                    sr_vert_c(sx + ss, y, sz - ss, 1, 0, col),
-                    NULL, vp);
+                    /* Star color — slight random tint */
+                    seed = seed * 1103515245u + 12345u;
+                    int tint = (seed >> 8) % 4;
+                    uint8_t cr, cg, cb;
+                    uint8_t base = (uint8_t)(brightness * 255.0f);
+                    if (tint == 0) {          /* white */
+                        cr = base; cg = base; cb = base;
+                    } else if (tint == 1) {   /* blue-ish */
+                        cr = (uint8_t)(base * 0.7f); cg = (uint8_t)(base * 0.8f); cb = base;
+                    } else if (tint == 2) {   /* yellow-ish */
+                        cr = base; cg = base; cb = (uint8_t)(base * 0.6f);
+                    } else {                  /* red-ish */
+                        cr = base; cg = (uint8_t)(base * 0.6f); cb = (uint8_t)(base * 0.5f);
+                    }
+                    uint32_t col = 0xFF000000 | ((uint32_t)cb << 16) | ((uint32_t)cg << 8) | cr;
+
+                    /* Billboard size — larger stars further from ship plane */
+                    float ss = 0.06f + brightness * 0.12f;
+
+                    /* Draw as billboard quad (XY-aligned, facing camera) */
+                    sr_draw_quad_doublesided(fb_ptr,
+                        sr_vert_c(star_x - ss, star_y - ss, star_z, 0, 0, col),
+                        sr_vert_c(star_x - ss, star_y + ss, star_z, 0, 1, col),
+                        sr_vert_c(star_x + ss, star_y + ss, star_z, 1, 1, col),
+                        sr_vert_c(star_x + ss, star_y - ss, star_z, 1, 0, col),
+                        NULL, vp);
+                    /* Cross-billboard (XZ plane) for visibility from more angles */
+                    sr_draw_quad_doublesided(fb_ptr,
+                        sr_vert_c(star_x - ss, star_y, star_z - ss, 0, 0, col),
+                        sr_vert_c(star_x - ss, star_y, star_z + ss, 0, 1, col),
+                        sr_vert_c(star_x + ss, star_y, star_z + ss, 1, 1, col),
+                        sr_vert_c(star_x + ss, star_y, star_z - ss, 1, 0, col),
+                        NULL, vp);
+                }
             }
         }
     }
@@ -675,20 +879,31 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
 
     sfa_ship *s = &sfa.player;
 
-    /* ── Top-down camera following the ship ── */
+    /* ── Pitched camera: behind and above the ship, looking forward ── */
+    /* Camera sits behind the ship (opposite of heading) and above,
+     * looking at a point ahead of the ship. This gives a 3/4 view. */
+    float cam_back_x = -sinf(s->visual_heading) * SFA_CAM_BACK;
+    float cam_back_z = -cosf(s->visual_heading) * SFA_CAM_BACK;
+    float look_fwd_x =  sinf(s->visual_heading) * SFA_CAM_LOOK_AHEAD;
+    float look_fwd_z =  cosf(s->visual_heading) * SFA_CAM_LOOK_AHEAD;
+
     sr_vec3 eye = {
-        s->x,
+        s->x + cam_back_x,
         SFA_CAM_HEIGHT,
-        s->z - 8.0f    /* slight offset behind for perspective */
+        s->z + cam_back_z
     };
-    sr_vec3 target = { s->x, 0.0f, s->z };
-    sr_vec3 up = { 0, 0, 1 };  /* Z-up for top-down feel */
+    sr_vec3 target = {
+        s->x + look_fwd_x,
+        0.0f,
+        s->z + look_fwd_z
+    };
+    sr_vec3 up = { 0, 1, 0 };
 
     sr_mat4 view = sr_mat4_lookat(eye, target, up);
     sr_mat4 proj = sr_mat4_perspective(
-        30.0f * SFA_DEG2RAD,
+        45.0f * SFA_DEG2RAD,
         (float)FB_WIDTH / (float)FB_HEIGHT,
-        1.0f, 200.0f
+        0.5f, 200.0f
     );
     sr_mat4 vp = sr_mat4_mul(proj, view);
 
