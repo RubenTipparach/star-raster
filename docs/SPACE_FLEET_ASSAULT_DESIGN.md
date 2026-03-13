@@ -1,10 +1,10 @@
-# Star Trek: Tactical Assault — Game Design Reference Document
+# Space Fleet Assault — Game Design Reference Document
 
 ## Overview
 
-**Star Trek: Tactical Assault** (2006, PSP/DS) is a real-time starship combat game developed by Quicksilver Software (creators of *Star Trek: Starfleet Command*). It features top-down 2D ship combat set in the TOS/TMP era of Star Trek. The game emphasizes tactical maneuvering, shield management, and energy allocation over twitch reflexes.
+**Space Fleet Assault** is a real-time starship combat game inspired by *Star Trek: Tactical Assault* (2006, PSP/DS), a top-down 2D ship combat game developed by Quicksilver Software. The original emphasized tactical maneuvering, shield management, and energy allocation over twitch reflexes.
 
-This document breaks down its core gameplay systems for reference when designing our own tactical starship combat game on the StarRaster engine.
+This document breaks down the core gameplay systems for reference when designing Space Fleet Assault on the StarRaster engine.
 
 ---
 
