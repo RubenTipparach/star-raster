@@ -930,7 +930,7 @@ static void sfa_draw_targeting_brackets(uint32_t *px, int W, int H,
 
 static void sfa_update_hover(const sr_mat4 *vp, int fb_w, int fb_h) {
     sfa.hovered_npc = -1;
-    float best_dist = 50.0f;  /* pixel threshold for hover (generous) */
+    float best_dist = 1e9f;
 
     for (int i = 0; i < sfa.npc_count; i++) {
         sfa_ship *npc = &sfa.npcs[i];
@@ -938,11 +938,20 @@ static void sfa_update_hover(const sr_mat4 *vp, int fb_w, int fb_h) {
         float scr_w;
         if (!sfa_project_to_screen(vp, npc->x, 0.2f, npc->z, fb_w, fb_h, &scr_x, &scr_y, &scr_w))
             continue;
+
+        /* Compute bracket size — same formula as rendering code */
+        float world_dist = sqrtf((npc->x - sfa.player.x) * (npc->x - sfa.player.x) +
+                                 (npc->z - sfa.player.z) * (npc->z - sfa.player.z));
+        int bracket_half = (int)(600.0f / (world_dist + 5.0f));
+        if (bracket_half < 8) bracket_half = 8;
+        if (bracket_half > 40) bracket_half = 40;
+
+        /* Check if mouse is inside the bracket area */
         float ddx = sfa.mouse_fb_x - (float)scr_x;
         float ddy = sfa.mouse_fb_y - (float)scr_y;
-        float dist = sqrtf(ddx*ddx + ddy*ddy);
-        if (dist < best_dist) {
-            best_dist = dist;
+        float pixel_dist = sqrtf(ddx*ddx + ddy*ddy);
+        if (pixel_dist <= (float)bracket_half && pixel_dist < best_dist) {
+            best_dist = pixel_dist;
             sfa.hovered_npc = i;
         }
     }
