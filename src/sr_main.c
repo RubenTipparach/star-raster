@@ -547,10 +547,12 @@ static void event(const sapp_event *ev) {
     /* ── Space Fleet touch routing ──────────────────────────── */
     if (current_scene == SCENE_SPACE_FLEET && app_state == STATE_RUNNING) {
         if (ev->type == SAPP_EVENTTYPE_MOUSE_DOWN && ev->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+            sfa_handle_mouse_click(ev->mouse_x, ev->mouse_y);
             sfa_handle_touch_began(ev->mouse_x, ev->mouse_y);
             return;
         }
         if (ev->type == SAPP_EVENTTYPE_MOUSE_MOVE) {
+            sfa_handle_mouse_move(ev->mouse_x, ev->mouse_y);
             sfa_handle_touch_moved(ev->mouse_x, ev->mouse_y);
             return;
         }

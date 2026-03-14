@@ -13,7 +13,7 @@
 #define SFA_DEG2RAD      (SFA_PI / 180.0f)
 
 #define SFA_ARENA_SIZE   80.0f      /* half-extent of playable area */
-#define SFA_GRID_SPACING 5.0f       /* starfield grid spacing */
+#define SFA_GRID_SPACING 10.0f      /* starfield grid spacing (sparser) */
 
 /* Speed levels (impulse) */
 #define SFA_SPEED_STOP   0
@@ -72,6 +72,13 @@ static inline uint32_t sfa_pal_shade(int base_idx, int shade) {
 
 /* ── Ship state ──────────────────────────────────────────────────── */
 
+#define SFA_MAX_NPC 4
+
+/* Targeting bracket colors */
+#define SFA_TARGET_HOVER    0xFF88AACC   /* dim bracket on hover */
+#define SFA_TARGET_SELECTED 0xFFFFDD44   /* bright blue glow (ABGR) when selected */
+#define SFA_TARGET_BRACKET_SIZE 2.0f     /* world-space bracket extent */
+
 typedef struct {
     float x, z;               /* world position */
     float heading;            /* current heading in radians (0 = +Z, CW) */
@@ -85,12 +92,24 @@ typedef struct {
 
     /* Smooth interpolation */
     float visual_heading;     /* smoothed heading for rendering */
+
+    /* Ship identity */
+    uint32_t color_hull;      /* custom hull color (0 = use default) */
+    uint32_t color_accent;    /* custom accent color */
 } sfa_ship;
 
 typedef struct {
     sfa_ship player;
+    sfa_ship npcs[SFA_MAX_NPC];
+    int      npc_count;
     float    time;
     bool     initialized;
+
+    /* Targeting */
+    int      hovered_npc;         /* NPC index under cursor, -1 = none */
+    int      selected_npc;        /* NPC index locked on, -1 = none */
+    float    mouse_fb_x, mouse_fb_y;  /* mouse pos in fb coords */
+    float    cam_target_yaw;      /* smoothed camera yaw toward target */
 
     /* Touch controls */
     bool     touch_steering;      /* is user dragging to steer? */
@@ -118,19 +137,36 @@ static bool sfa_key_down  = false;
 
 /* ── Initialization ──────────────────────────────────────────────── */
 
+static void sfa_init_ship(sfa_ship *s, float x, float z, float heading,
+                          uint32_t hull_col, uint32_t accent_col) {
+    s->x = x;
+    s->z = z;
+    s->heading = heading;
+    s->target_heading = heading;
+    s->visual_heading = heading;
+    s->speed_level = SFA_SPEED_STOP;
+    s->hull = 100.0f;
+    s->color_hull = hull_col;
+    s->color_accent = accent_col;
+    for (int i = 0; i < 6; i++)
+        s->shields[i] = 100.0f;
+}
+
 static void sfa_init(void) {
     memset(&sfa, 0, sizeof(sfa));
 
-    sfa.player.x = 0.0f;
-    sfa.player.z = 0.0f;
-    sfa.player.heading = 0.0f;
-    sfa.player.target_heading = 0.0f;
-    sfa.player.visual_heading = 0.0f;
-    sfa.player.speed_level = SFA_SPEED_STOP;
-    sfa.player.hull = 100.0f;
+    /* Player ship — default orange */
+    sfa_init_ship(&sfa.player, 0.0f, 0.0f, 0.0f, 0, 0);
 
-    for (int i = 0; i < 6; i++)
-        sfa.player.shields[i] = 100.0f;
+    /* NPC ship — Klingon green, parked nearby */
+    sfa.npc_count = 1;
+    sfa_init_ship(&sfa.npcs[0], 15.0f, 20.0f, SFA_PI * 0.75f,
+                  0xFF33AA55, 0xFF55DD77);   /* green hull */
+    sfa.npcs[0].speed_level = SFA_SPEED_QUARTER;
+
+    sfa.hovered_npc = -1;
+    sfa.selected_npc = -1;
+    sfa.cam_target_yaw = 0.0f;
 
     /* Place a target ship in the arena */
     sfa.target_x = 30.0f;
@@ -194,6 +230,52 @@ static void sfa_update(float dt) {
     if (s->x < -SFA_ARENA_SIZE) s->x = -SFA_ARENA_SIZE;
     if (s->z >  SFA_ARENA_SIZE) s->z =  SFA_ARENA_SIZE;
     if (s->z < -SFA_ARENA_SIZE) s->z = -SFA_ARENA_SIZE;
+
+    /* Update NPC ships (simple patrol — they just fly in circles) */
+    for (int i = 0; i < sfa.npc_count; i++) {
+        sfa_ship *npc = &sfa.npcs[i];
+        /* Slow turn to patrol in a circle */
+        npc->target_heading += 0.3f * dt;
+        npc->target_heading = sfa_normalize_angle(npc->target_heading);
+
+        float ndiff = sfa_normalize_angle(npc->target_heading - npc->heading);
+        float nmax = SFA_TURN_RATE * dt;
+        if (ndiff > nmax) ndiff = nmax;
+        else if (ndiff < -nmax) ndiff = -nmax;
+        npc->heading += ndiff;
+        npc->heading = sfa_normalize_angle(npc->heading);
+
+        float nvdiff = sfa_normalize_angle(npc->heading - npc->visual_heading);
+        npc->visual_heading += nvdiff * 8.0f * dt;
+        npc->visual_heading = sfa_normalize_angle(npc->visual_heading);
+
+        float nspeed = sfa_speed_values[npc->speed_level];
+        npc->x += sinf(npc->heading) * nspeed * dt;
+        npc->z += cosf(npc->heading) * nspeed * dt;
+
+        /* Clamp NPC to arena */
+        if (npc->x >  SFA_ARENA_SIZE) npc->x =  SFA_ARENA_SIZE;
+        if (npc->x < -SFA_ARENA_SIZE) npc->x = -SFA_ARENA_SIZE;
+        if (npc->z >  SFA_ARENA_SIZE) npc->z =  SFA_ARENA_SIZE;
+        if (npc->z < -SFA_ARENA_SIZE) npc->z = -SFA_ARENA_SIZE;
+    }
+
+    /* Smooth camera yaw toward selected target */
+    if (sfa.selected_npc >= 0 && sfa.selected_npc < sfa.npc_count) {
+        sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
+        float dx = tgt->x - s->x;
+        float dz = tgt->z - s->z;
+        float angle_to_target = atan2f(dx, dz);
+        /* Blend between ship heading and target direction */
+        float cam_diff = sfa_normalize_angle(angle_to_target - sfa.cam_target_yaw);
+        sfa.cam_target_yaw += cam_diff * 3.0f * dt;
+        sfa.cam_target_yaw = sfa_normalize_angle(sfa.cam_target_yaw);
+    } else {
+        /* No target — follow ship heading */
+        float cam_diff = sfa_normalize_angle(s->visual_heading - sfa.cam_target_yaw);
+        sfa.cam_target_yaw += cam_diff * 5.0f * dt;
+        sfa.cam_target_yaw = sfa_normalize_angle(sfa.cam_target_yaw);
+    }
 }
 
 /* ── 3D Ship model ───────────────────────────────────────────────── */
@@ -246,13 +328,20 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
     );
     sr_mat4 mvp = sr_mat4_mul(*vp, model);
 
-    /* Colors */
-    uint32_t hull_top   = SFA_SHIP_COLOR;       /* 0xFFFF9933 */
-    uint32_t hull_side  = 0xFFCC7722;
-    uint32_t hull_bot   = 0xFF995511;
-    uint32_t nacelle_t  = SFA_SHIP_ACCENT;      /* 0xFFFFCC66 */
-    uint32_t nacelle_s  = 0xFFDDAA44;
-    uint32_t nacelle_b  = 0xFFBB8833;
+    /* Colors — use per-ship overrides if set */
+    uint32_t hull_top   = s->color_hull   ? s->color_hull   : SFA_SHIP_COLOR;
+    uint32_t nacelle_t  = s->color_accent ? s->color_accent : SFA_SHIP_ACCENT;
+    /* Derive darker shades from hull color */
+    uint8_t hr = (uint8_t)(hull_top & 0xFF);
+    uint8_t hg = (uint8_t)((hull_top >> 8) & 0xFF);
+    uint8_t hb = (uint8_t)((hull_top >> 16) & 0xFF);
+    uint32_t hull_side = 0xFF000000 | ((uint32_t)(hb*3/4)<<16) | ((uint32_t)(hg*3/4)<<8) | (hr*3/4);
+    uint32_t hull_bot  = 0xFF000000 | ((uint32_t)(hb/2)<<16) | ((uint32_t)(hg/2)<<8) | (hr/2);
+    uint8_t nr = (uint8_t)(nacelle_t & 0xFF);
+    uint8_t ng = (uint8_t)((nacelle_t >> 8) & 0xFF);
+    uint8_t nb = (uint8_t)((nacelle_t >> 16) & 0xFF);
+    uint32_t nacelle_s = 0xFF000000 | ((uint32_t)(nb*3/4)<<16) | ((uint32_t)(ng*3/4)<<8) | (nr*3/4);
+    uint32_t nacelle_b = 0xFF000000 | ((uint32_t)(nb/2)<<16) | ((uint32_t)(ng/2)<<8) | (nr/2);
     uint32_t pylon_col  = 0xFF887755;
     uint32_t bridge_col = 0xFFFFDDAA;
     uint32_t deflector  = 0xFFFFAA33;  /* blue-ish glow (ABGR) */
@@ -468,7 +557,11 @@ static void sfa_draw_starfield(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
                 int iz = (int)floorf(gz / spacing);
                 uint32_t seed = (uint32_t)(ix * 73856093u ^ iy * 83492791u ^ iz * 19349663u);
 
-                int n_stars = 1 + (seed & 1);
+                /* Skip ~50% of cells (with doubled spacing = ~25% total density) */
+                if ((seed & 3) == 0) continue;
+
+                /* 1 star per cell */
+                int n_stars = 1;
                 for (int si = 0; si < n_stars; si++) {
                     seed = seed * 1103515245u + 12345u + (uint32_t)si * 7u;
                     float ox = (float)((seed >> 4) & 0xFF) / 255.0f * spacing;
@@ -797,6 +890,60 @@ static void sfa_draw_ring(uint32_t *px, int W, int H,
         }
 }
 
+/* ── Targeting brackets (HUD overlay in screen space) ────────────── */
+
+static void sfa_draw_bracket_corner(uint32_t *px, int W, int H,
+                                      int cx, int cy, int size,
+                                      int dx, int dy, uint32_t col) {
+    /* Draw an L-shaped corner bracket */
+    int arm = size / 3;
+    int thick = 1;
+    /* Horizontal arm */
+    int hx0 = cx, hx1 = cx + dx * arm;
+    if (hx0 > hx1) { int t = hx0; hx0 = hx1; hx1 = t; }
+    int hy0 = cy, hy1 = cy + dy * thick;
+    if (hy0 > hy1) { int t = hy0; hy0 = hy1; hy1 = t; }
+    sfa_draw_rect(px, W, H, hx0, hy0, hx1 + 1, hy1 + 1, col);
+    /* Vertical arm */
+    int vx0 = cx, vx1 = cx + dx * thick;
+    if (vx0 > vx1) { int t = vx0; vx0 = vx1; vx1 = t; }
+    int vy0 = cy, vy1 = cy + dy * arm;
+    if (vy0 > vy1) { int t = vy0; vy0 = vy1; vy1 = t; }
+    sfa_draw_rect(px, W, H, vx0, vy0, vx1 + 1, vy1 + 1, col);
+}
+
+static void sfa_draw_targeting_brackets(uint32_t *px, int W, int H,
+                                          int cx, int cy, int half_size,
+                                          uint32_t col) {
+    /* Four corner brackets */
+    sfa_draw_bracket_corner(px, W, H, cx - half_size, cy - half_size, half_size*2,  1,  1, col);
+    sfa_draw_bracket_corner(px, W, H, cx + half_size, cy - half_size, half_size*2, -1,  1, col);
+    sfa_draw_bracket_corner(px, W, H, cx - half_size, cy + half_size, half_size*2,  1, -1, col);
+    sfa_draw_bracket_corner(px, W, H, cx + half_size, cy + half_size, half_size*2, -1, -1, col);
+}
+
+/* ── Hover detection: check if mouse is near a projected NPC ─────── */
+
+static void sfa_update_hover(const sr_mat4 *vp, int fb_w, int fb_h) {
+    sfa.hovered_npc = -1;
+    float best_dist = 25.0f;  /* pixel threshold for hover */
+
+    for (int i = 0; i < sfa.npc_count; i++) {
+        sfa_ship *npc = &sfa.npcs[i];
+        int scr_x, scr_y;
+        float scr_w;
+        if (!sfa_project_to_screen(vp, npc->x, 0.2f, npc->z, fb_w, fb_h, &scr_x, &scr_y, &scr_w))
+            continue;
+        float ddx = sfa.mouse_fb_x - (float)scr_x;
+        float ddy = sfa.mouse_fb_y - (float)scr_y;
+        float dist = sqrtf(ddx*ddx + ddy*ddy);
+        if (dist < best_dist) {
+            best_dist = dist;
+            sfa.hovered_npc = i;
+        }
+    }
+}
+
 /* ── HUD: Shield display (hexagonal around miniship) ─────────────── */
 
 static void sfa_draw_shield_hud(uint32_t *px, int W, int H,
@@ -1076,6 +1223,32 @@ static void sfa_handle_touch_ended(void) {
     sfa.touch_throttle = false;
 }
 
+/* ── Mouse input for targeting ────────────────────────────────────── */
+
+static void sfa_handle_mouse_move(float sx, float sy) {
+    float fx, fy;
+    screen_to_fb(sx, sy, &fx, &fy);
+    sfa.mouse_fb_x = fx;
+    sfa.mouse_fb_y = fy;
+}
+
+static void sfa_handle_mouse_click(float sx, float sy) {
+    float fx, fy;
+    screen_to_fb(sx, sy, &fx, &fy);
+    sfa.mouse_fb_x = fx;
+    sfa.mouse_fb_y = fy;
+
+    /* If hovering an NPC, select/deselect it */
+    if (sfa.hovered_npc >= 0) {
+        if (sfa.selected_npc == sfa.hovered_npc)
+            sfa.selected_npc = -1;  /* deselect */
+        else
+            sfa.selected_npc = sfa.hovered_npc;
+    } else {
+        sfa.selected_npc = -1;  /* click empty space to deselect */
+    }
+}
+
 /* ── Key input ───────────────────────────────────────────────────── */
 
 static void sfa_handle_key_down(sapp_keycode key) {
@@ -1099,6 +1272,14 @@ static void sfa_handle_key_down(sapp_keycode key) {
         case SAPP_KEYCODE_S:
             if (s->speed_level > 0)
                 s->speed_level--;
+            break;
+        case SAPP_KEYCODE_TAB:
+            /* Cycle through targets */
+            if (sfa.npc_count > 0) {
+                sfa.selected_npc++;
+                if (sfa.selected_npc >= sfa.npc_count)
+                    sfa.selected_npc = -1;  /* deselect after last */
+            }
             break;
         default:
             break;
@@ -1129,27 +1310,26 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
 
     sfa_ship *s = &sfa.player;
 
-    /* ── Pitched camera: behind and above the ship, looking forward ── */
-    /* Camera sits behind the ship (opposite of heading) and above,
-     * looking at a point ahead of the ship. This gives a 3/4 view. */
-    float cam_back_x =  sinf(s->visual_heading) * SFA_CAM_BACK;
-    float cam_back_z = -cosf(s->visual_heading) * SFA_CAM_BACK;
-    float look_fwd_x = -sinf(s->visual_heading) * SFA_CAM_LOOK_AHEAD;
-    float look_fwd_z =  cosf(s->visual_heading) * SFA_CAM_LOOK_AHEAD;
+    /* ── Camera: use cam_target_yaw which blends toward selected target ── */
+    float cam_yaw = sfa.cam_target_yaw;
+    float cam_back_x =  sinf(cam_yaw) * SFA_CAM_BACK;
+    float cam_back_z = -cosf(cam_yaw) * SFA_CAM_BACK;
+    float look_fwd_x = -sinf(cam_yaw) * SFA_CAM_LOOK_AHEAD;
+    float look_fwd_z =  cosf(cam_yaw) * SFA_CAM_LOOK_AHEAD;
 
     sr_vec3 eye = {
         s->x + cam_back_x,
         SFA_CAM_HEIGHT,
         s->z + cam_back_z
     };
-    sr_vec3 target = {
+    sr_vec3 cam_target = {
         s->x + look_fwd_x,
         0.0f,
         s->z + look_fwd_z
     };
     sr_vec3 up = { 0, 1, 0 };
 
-    sr_mat4 view = sr_mat4_lookat(eye, target, up);
+    sr_mat4 view = sr_mat4_lookat(eye, cam_target, up);
     sr_mat4 proj = sr_mat4_perspective(
         45.0f * SFA_DEG2RAD,
         (float)FB_WIDTH / (float)FB_HEIGHT,
@@ -1159,6 +1339,9 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
 
     int W = fb_ptr->width, H = fb_ptr->height;
     uint32_t *px = fb_ptr->color;
+
+    /* Update hover detection */
+    sfa_update_hover(&vp, W, H);
 
     /* Draw world */
     sfa_draw_starfield(fb_ptr, &vp, s->x, s->z);
@@ -1196,8 +1379,61 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
         }
     }
 
-    /* Draw ship */
+    /* Draw player ship */
     sfa_draw_ship(fb_ptr, &vp, s);
+
+    /* Draw NPC ships */
+    for (int i = 0; i < sfa.npc_count; i++)
+        sfa_draw_ship(fb_ptr, &vp, &sfa.npcs[i]);
+
+    /* Draw targeting brackets on NPC ships */
+    {
+        for (int i = 0; i < sfa.npc_count; i++) {
+            sfa_ship *npc = &sfa.npcs[i];
+            int scr_x, scr_y;
+            float scr_w;
+            if (!sfa_project_to_screen(&vp, npc->x, 0.2f, npc->z, W, H, &scr_x, &scr_y, &scr_w))
+                continue;
+
+            /* Bracket size based on distance */
+            float ddx = npc->x - s->x;
+            float ddz = npc->z - s->z;
+            float dist = sqrtf(ddx*ddx + ddz*ddz);
+            int bracket_half = (int)(600.0f / (dist + 5.0f));
+            if (bracket_half < 8) bracket_half = 8;
+            if (bracket_half > 40) bracket_half = 40;
+
+            uint32_t bracket_col;
+            if (i == sfa.selected_npc) {
+                /* Selected: bright blue glow with pulse */
+                float pulse = 0.7f + 0.3f * sinf(sfa.time * 6.0f);
+                uint8_t b = (uint8_t)(255.0f * pulse);
+                uint8_t g = (uint8_t)(220.0f * pulse);
+                bracket_col = 0xFF000000 | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)(100);
+                /* Draw double brackets for selected */
+                sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half + 2, bracket_col);
+                sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half, bracket_col);
+
+                /* Target info text */
+                char tbuf[32];
+                snprintf(tbuf, sizeof(tbuf), "TGT: %.0fm", dist);
+                sr_draw_text_shadow(px, W, H, scr_x - 18, scr_y + bracket_half + 4,
+                                     tbuf, SFA_TARGET_SELECTED, SFA_HUD_SHADOW);
+            } else if (i == sfa.hovered_npc) {
+                /* Hovered: highlighted brackets */
+                bracket_col = 0xFFFFEE88;  /* bright warm white */
+                sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half, bracket_col);
+
+                /* Hover hint */
+                sr_draw_text_shadow(px, W, H, scr_x - 12, scr_y + bracket_half + 4,
+                                     "CLICK", 0xFFCCCCCC, SFA_HUD_SHADOW);
+            } else {
+                /* Default: dim brackets */
+                bracket_col = 0xFF555555;
+                sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half, bracket_col);
+            }
+        }
+    }
 
     /* Draw HUD */
     sfa_draw_hud(fb_ptr, s);
