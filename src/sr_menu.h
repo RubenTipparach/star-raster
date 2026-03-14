@@ -8,7 +8,7 @@ static void draw_stats(sr_framebuffer *fb_ptr, int tris) {
     uint32_t white  = 0xFFFFFFFF;
     uint32_t shadow = 0xFF000000;
 
-    if (current_scene != SCENE_DUNGEON) {
+    if (current_scene != SCENE_DUNGEON && current_scene != SCENE_SPACE_FLEET) {
         snprintf(buf, sizeof(buf), "FPS: %d", fps_display);
         sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
                             3, 3, buf, white, shadow);

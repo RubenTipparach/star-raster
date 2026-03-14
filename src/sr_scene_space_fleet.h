@@ -5,7 +5,6 @@
 
 #include <math.h>
 #include <stdbool.h>
-#include "not_64_palette_lut.h"
 
 /* ── Constants ───────────────────────────────────────────────────── */
 
@@ -78,6 +77,7 @@ typedef struct {
     float heading;            /* current heading in radians (0 = +Z, CW) */
     float target_heading;     /* desired heading */
     int   speed_level;        /* 0-3 */
+    float current_speed;      /* actual speed (accelerates toward target) */
 
     /* Shield facings: F, FR, AR, A, AL, FL (clockwise from front) */
     float shields[6];
@@ -174,10 +174,20 @@ static void sfa_update(float dt) {
     s->visual_heading += vdiff * 8.0f * dt;
     s->visual_heading = sfa_normalize_angle(s->visual_heading);
 
+    /* Accelerate toward target speed */
+    float target_speed = sfa_speed_values[s->speed_level];
+    float accel = 4.0f; /* units/sec² */
+    if (s->current_speed < target_speed) {
+        s->current_speed += accel * dt;
+        if (s->current_speed > target_speed) s->current_speed = target_speed;
+    } else if (s->current_speed > target_speed) {
+        s->current_speed -= accel * dt * 1.5f; /* braking is faster */
+        if (s->current_speed < target_speed) s->current_speed = target_speed;
+    }
+
     /* Move ship */
-    float speed = sfa_speed_values[s->speed_level];
-    s->x -= sinf(s->heading) * speed * dt;
-    s->z += cosf(s->heading) * speed * dt;
+    s->x -= sinf(s->heading) * s->current_speed * dt;
+    s->z += cosf(s->heading) * s->current_speed * dt;
 
     /* Clamp to arena bounds */
     if (s->x >  SFA_ARENA_SIZE) s->x =  SFA_ARENA_SIZE;
@@ -385,8 +395,9 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
     }
 
     /* ── Engine glow (exhaust from nacelle rears) ── */
-    if (s->speed_level > 0) {
-        float glow_len = 0.4f + 0.3f * s->speed_level;
+    if (s->current_speed > 0.1f) {
+        float speed_frac = s->current_speed / sfa_speed_values[SFA_NUM_SPEEDS - 1];
+        float glow_len = 0.4f + 0.9f * speed_frac;
         float pulse = 0.7f + 0.3f * sinf(sfa.time * 12.0f);
         uint8_t gr = (uint8_t)(255.0f * pulse);
         uint8_t gg = (uint8_t)(100.0f * pulse);
@@ -429,35 +440,34 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
     }
 }
 
-/* ── 3D Starfield (stars scattered in a volume around the camera) ── */
+/* ── 3D Starfield (pixel-based with palette shading) ─────────────── */
 
 static void sfa_draw_starfield(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
                                  float cam_x, float cam_z) {
-    /* Stars are distributed in a 3D volume (XYZ cube cells).
-     * Stars are billboard quads that always face the camera.
-     * Multiple depth layers create parallax. */
+    int W = fb_ptr->width, H = fb_ptr->height;
+    uint32_t *px = fb_ptr->color;
+
     float spacing = SFA_GRID_SPACING;
     float view_range = 50.0f;
-    float y_range = 30.0f;     /* vertical spread of stars */
-    float y_center = 5.0f;    /* center Y of star volume */
+    float y_range = 30.0f;
+    float y_center = 5.0f;
 
     float x_start = floorf((cam_x - view_range) / spacing) * spacing;
     float z_start = floorf((cam_z - view_range) / spacing) * spacing;
     float y_start = floorf((y_center - y_range) / spacing) * spacing;
 
-    /* Camera up/right for billboarding (approximate — axis-aligned is fine
-     * since the camera mostly looks forward/down) */
+    /* Palette base indices for star tints */
+    static const int star_tints[4] = { 8, 47, 18, 12 };
+    /* white(C7DCD0), blue(4D9BE6), yellow(F9C22B), red(EA4F36) */
 
     for (float gx = x_start; gx < cam_x + view_range; gx += spacing) {
         for (float gz = z_start; gz < cam_z + view_range; gz += spacing) {
             for (float gy = y_start; gy < y_center + y_range; gy += spacing) {
-                /* Deterministic pseudo-random per 3D cell */
                 int ix = (int)floorf(gx / spacing);
                 int iy = (int)floorf(gy / spacing);
                 int iz = (int)floorf(gz / spacing);
                 uint32_t seed = (uint32_t)(ix * 73856093u ^ iy * 83492791u ^ iz * 19349663u);
 
-                /* 1-2 stars per cell */
                 int n_stars = 1 + (seed & 1);
                 for (int si = 0; si < n_stars; si++) {
                     seed = seed * 1103515245u + 12345u + (uint32_t)si * 7u;
@@ -473,47 +483,47 @@ static void sfa_draw_starfield(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
                     float star_y = gy + oy;
                     float star_z = gz + oz;
 
-                    /* Distance fade — dimmer when far from camera XZ */
+                    /* Distance fade */
                     float ddx = star_x - cam_x;
                     float ddz = star_z - cam_z;
-                    float dist2 = ddx*ddx + ddz*ddz;
+                    float dist2 = ddx * ddx + ddz * ddz;
                     if (dist2 > view_range * view_range) continue;
                     float dist_fade = 1.0f - dist2 / (view_range * view_range);
                     brightness *= dist_fade;
+                    if (brightness < 0.02f) continue;
 
-                    /* Star color — slight random tint */
+                    /* Project to screen */
+                    sr_vec4 clip = sr_mat4_mul_v4(*vp, sr_v4(star_x, star_y, star_z, 1.0f));
+                    if (clip.w < 0.1f) continue; /* behind camera */
+                    float inv_w = 1.0f / clip.w;
+                    float ndc_x = clip.x * inv_w;
+                    float ndc_y = clip.y * inv_w;
+
+                    int sx = (int)((ndc_x * 0.5f + 0.5f) * W);
+                    int sy = (int)((1.0f - (ndc_y * 0.5f + 0.5f)) * H);
+
+                    if (sx < 0 || sx >= W || sy < 0 || sy >= H) continue;
+
+                    /* Tint and shade */
                     seed = seed * 1103515245u + 12345u;
                     int tint = (seed >> 8) % 4;
-                    uint8_t cr, cg, cb;
-                    uint8_t base = (uint8_t)(brightness * 255.0f);
-                    if (tint == 0) {          /* white */
-                        cr = base; cg = base; cb = base;
-                    } else if (tint == 1) {   /* blue-ish */
-                        cr = (uint8_t)(base * 0.7f); cg = (uint8_t)(base * 0.8f); cb = base;
-                    } else if (tint == 2) {   /* yellow-ish */
-                        cr = base; cg = base; cb = (uint8_t)(base * 0.6f);
-                    } else {                  /* red-ish */
-                        cr = base; cg = (uint8_t)(base * 0.6f); cb = (uint8_t)(base * 0.5f);
+                    int base_col = star_tints[tint];
+                    /* Map brightness [0,1] → shade [2, PAL_MID_ROW+2] */
+                    int shade = 2 + (int)(brightness * (float)(PAL_MID_ROW));
+                    uint32_t col = sfa_pal_shade(base_col, shade);
+
+                    /* Close stars (< 40% range) = 2x2, far = 1x1 */
+                    float dist_norm = dist2 / (view_range * view_range);
+                    if (dist_norm < 0.16f && brightness > 0.25f) {
+                        /* 2x2 pixel star */
+                        px[sy * W + sx] = col;
+                        if (sx + 1 < W) px[sy * W + sx + 1] = col;
+                        if (sy + 1 < H) px[(sy + 1) * W + sx] = col;
+                        if (sx + 1 < W && sy + 1 < H) px[(sy + 1) * W + sx + 1] = col;
+                    } else {
+                        /* 1x1 pixel star */
+                        px[sy * W + sx] = col;
                     }
-                    uint32_t col = 0xFF000000 | ((uint32_t)cb << 16) | ((uint32_t)cg << 8) | cr;
-
-                    /* Billboard size — larger stars further from ship plane */
-                    float ss = 0.06f + brightness * 0.12f;
-
-                    /* Draw as billboard quad (XY-aligned, facing camera) */
-                    sr_draw_quad_doublesided(fb_ptr,
-                        sr_vert_c(star_x - ss, star_y - ss, star_z, 0, 0, col),
-                        sr_vert_c(star_x - ss, star_y + ss, star_z, 0, 1, col),
-                        sr_vert_c(star_x + ss, star_y + ss, star_z, 1, 1, col),
-                        sr_vert_c(star_x + ss, star_y - ss, star_z, 1, 0, col),
-                        NULL, vp);
-                    /* Cross-billboard (XZ plane) for visibility from more angles */
-                    sr_draw_quad_doublesided(fb_ptr,
-                        sr_vert_c(star_x - ss, star_y, star_z - ss, 0, 0, col),
-                        sr_vert_c(star_x - ss, star_y, star_z + ss, 0, 1, col),
-                        sr_vert_c(star_x + ss, star_y, star_z + ss, 1, 1, col),
-                        sr_vert_c(star_x + ss, star_y, star_z - ss, 1, 0, col),
-                        NULL, vp);
                 }
             }
         }
@@ -545,6 +555,194 @@ static void sfa_draw_arena_boundary(sr_framebuffer *fb_ptr, const sr_mat4 *vp) {
         sr_vert_c(-s, y, s-w,  0,0, col), sr_vert_c(-s, y, s,    0,1, col),
         sr_vert_c(s, y, s,     1,1, col), sr_vert_c(s, y, s-w,   1,0, col),
         NULL, vp);
+}
+
+/* ── Target drawing & projection ─────────────────────────────────── */
+
+/* Draw Klingon Bird of Prey — swept wings, central command pod, neck */
+static void sfa_draw_target_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
+                                   float tx, float tz) {
+    uint32_t hull_t = sfa_pal_abgr(30); /* 239063 dark green */
+    uint32_t hull_s = sfa_pal_abgr(29); /* 165a4c darker green */
+    uint32_t hull_b = sfa_pal_abgr(35); /* 374e4a darkest */
+    uint32_t wing_t = sfa_pal_abgr(36); /* 547e64 olive green */
+    uint32_t wing_s = sfa_pal_abgr(35); /* 374e4a */
+    uint32_t wing_b = sfa_pal_abgr(34); /* 313638 near-black */
+    uint32_t head_t = sfa_pal_abgr(31); /* 1ebc73 bright green */
+    uint32_t head_s = sfa_pal_abgr(30);
+    uint32_t gun_col = sfa_pal_abgr(15); /* e83b3b red — disruptor */
+
+    sr_mat4 model = sr_mat4_translate(tx, 0.0f, tz);
+    sr_mat4 mvp = sr_mat4_mul(*vp, model);
+
+    /* Central body (aft section) */
+    sfa_draw_box(fb_ptr, &mvp,
+                 -0.3f, -0.1f, -0.9f,
+                  0.3f,  0.15f, 0.0f,
+                 hull_t, hull_s, hull_b);
+
+    /* Neck (connecting body to head) */
+    sfa_draw_box(fb_ptr, &mvp,
+                 -0.1f, -0.05f, 0.0f,
+                  0.1f,  0.08f, 0.7f,
+                 hull_t, hull_s, hull_b);
+
+    /* Command pod (head) */
+    sfa_draw_box(fb_ptr, &mvp,
+                 -0.2f, -0.08f, 0.7f,
+                  0.2f,  0.12f, 1.1f,
+                 head_t, head_s, hull_b);
+
+    /* Disruptor cannon (front of head) */
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(-0.08f, -0.02f, 1.11f, 0,0, gun_col),
+        sr_vert_c(-0.08f,  0.06f, 1.11f, 0,1, gun_col),
+        sr_vert_c( 0.08f,  0.06f, 1.11f, 1,1, gun_col),
+        sr_vert_c( 0.08f, -0.02f, 1.11f, 1,0, gun_col),
+        NULL, &mvp);
+
+    /* Left swept wing — angled down and forward */
+    /* Wing root at body, tip swept forward and outward */
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(-0.3f,  0.05f, -0.6f, 0,0, wing_t),
+        sr_vert_c(-0.3f,  0.05f, -0.1f, 0,1, wing_t),
+        sr_vert_c(-1.4f, -0.15f,  0.4f, 1,1, wing_t),
+        sr_vert_c(-1.4f, -0.15f, -0.2f, 1,0, wing_t),
+        NULL, &mvp);
+    /* Wing bottom */
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(-0.3f, -0.02f, -0.6f, 0,0, wing_b),
+        sr_vert_c(-1.4f, -0.18f, -0.2f, 1,0, wing_b),
+        sr_vert_c(-1.4f, -0.18f,  0.4f, 1,1, wing_b),
+        sr_vert_c(-0.3f, -0.02f, -0.1f, 0,1, wing_b),
+        NULL, &mvp);
+    /* Wing leading edge */
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(-0.3f, -0.02f, -0.1f, 0,0, wing_s),
+        sr_vert_c(-1.4f, -0.18f,  0.4f, 1,0, wing_s),
+        sr_vert_c(-1.4f, -0.15f,  0.4f, 1,1, wing_s),
+        sr_vert_c(-0.3f,  0.05f, -0.1f, 0,1, wing_s),
+        NULL, &mvp);
+    /* Wingtip disruptor */
+    sfa_draw_box(fb_ptr, &mvp,
+                 -1.5f, -0.18f, 0.1f,
+                 -1.35f,-0.1f,  0.5f,
+                 gun_col, gun_col, gun_col);
+
+    /* Right swept wing (mirror) */
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(0.3f,  0.05f, -0.1f, 0,0, wing_t),
+        sr_vert_c(0.3f,  0.05f, -0.6f, 0,1, wing_t),
+        sr_vert_c(1.4f, -0.15f, -0.2f, 1,1, wing_t),
+        sr_vert_c(1.4f, -0.15f,  0.4f, 1,0, wing_t),
+        NULL, &mvp);
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(0.3f, -0.02f, -0.1f, 0,0, wing_b),
+        sr_vert_c(0.3f, -0.02f, -0.6f, 0,1, wing_b),
+        sr_vert_c(1.4f, -0.18f, -0.2f, 1,1, wing_b),
+        sr_vert_c(1.4f, -0.18f,  0.4f, 1,0, wing_b),
+        NULL, &mvp);
+    sr_draw_quad(fb_ptr,
+        sr_vert_c(0.3f,  0.05f, -0.1f, 0,0, wing_s),
+        sr_vert_c(0.3f, -0.02f, -0.1f, 0,1, wing_s),
+        sr_vert_c(1.4f, -0.18f,  0.4f, 1,1, wing_s),
+        sr_vert_c(1.4f, -0.15f,  0.4f, 1,0, wing_s),
+        NULL, &mvp);
+    sfa_draw_box(fb_ptr, &mvp,
+                 1.35f, -0.18f, 0.1f,
+                 1.5f,  -0.1f,  0.5f,
+                 gun_col, gun_col, gun_col);
+}
+
+/* Project a world point to framebuffer coords. Returns false if behind camera. */
+static bool sfa_project_to_screen(const sr_mat4 *vp, float wx, float wy, float wz,
+                                    int W, int H, int *out_sx, int *out_sy, float *out_w) {
+    sr_vec4 clip = sr_mat4_mul_v4(*vp, sr_v4(wx, wy, wz, 1.0f));
+    *out_w = clip.w;
+    if (clip.w < 0.1f) {
+        /* Behind camera — compute direction for edge indicator */
+        *out_sx = (clip.x < 0) ? W - 1 : 0;
+        *out_sy = (clip.y > 0) ? 0 : H - 1;
+        return false;
+    }
+    float inv_w = 1.0f / clip.w;
+    float ndc_x = clip.x * inv_w;
+    float ndc_y = clip.y * inv_w;
+    *out_sx = (int)((ndc_x * 0.5f + 0.5f) * W);
+    *out_sy = (int)((1.0f - (ndc_y * 0.5f + 0.5f)) * H);
+    return true;
+}
+
+/* Draw targeting reticle brackets around a screen point */
+static void sfa_draw_reticle(uint32_t *px, int W, int H,
+                               int cx, int cy, bool selected) {
+    uint32_t col = selected ? sfa_pal_abgr(15) : sfa_pal_abgr(12); /* red / orange */
+    int r = selected ? 10 : 8;  /* bracket size */
+    int t = 3;                  /* bracket arm length */
+
+    /* Four corner brackets */
+    for (int i = 0; i < t; i++) {
+        /* Top-left */
+        int x, y;
+        x = cx - r + i; y = cy - r;
+        if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = col;
+        x = cx - r; y = cy - r + i;
+        if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = col;
+        /* Top-right */
+        x = cx + r - i; y = cy - r;
+        if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = col;
+        x = cx + r; y = cy - r + i;
+        if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = col;
+        /* Bottom-left */
+        x = cx - r + i; y = cy + r;
+        if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = col;
+        x = cx - r; y = cy + r - i;
+        if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = col;
+        /* Bottom-right */
+        x = cx + r - i; y = cy + r;
+        if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = col;
+        x = cx + r; y = cy + r - i;
+        if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = col;
+    }
+}
+
+/* Draw off-screen target indicator clamped to screen edge */
+static void sfa_draw_offscreen_indicator(uint32_t *px, int W, int H,
+                                           int tx, int ty, bool selected) {
+    /* Clamp to screen edge with margin */
+    int margin = 12;
+    int cx = tx, cy = ty;
+    if (cx < margin) cx = margin;
+    if (cx >= W - margin) cx = W - margin - 1;
+    if (cy < margin + 14) cy = margin + 14; /* avoid HUD top bar */
+    if (cy >= H - margin) cy = H - margin - 1;
+
+    uint32_t col = selected ? sfa_pal_abgr(15) : sfa_pal_abgr(12);
+
+    /* Draw small arrow pointing toward target */
+    float dx = (float)(tx - cx);
+    float dy = (float)(ty - cy);
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 1.0f) len = 1.0f;
+    dx /= len; dy /= len;
+
+    /* Arrow tip */
+    int ax = cx + (int)(dx * 5);
+    int ay = cy + (int)(dy * 5);
+    /* Draw a 3x3 filled square at the indicator position */
+    for (int oy = -1; oy <= 1; oy++)
+        for (int ox = -1; ox <= 1; ox++) {
+            int px2 = cx + ox, py2 = cy + oy;
+            if (px2 >= 0 && px2 < W && py2 >= 0 && py2 < H)
+                px[py2 * W + px2] = col;
+        }
+    /* Arrow line */
+    if (ax >= 0 && ax < W && ay >= 0 && ay < H)
+        px[ay * W + ax] = col;
+    int mx = cx + (int)(dx * 3);
+    int my = cy + (int)(dy * 3);
+    if (mx >= 0 && mx < W && my >= 0 && my < H)
+        px[my * W + mx] = col;
 }
 
 /* ── HUD Drawing Helpers ─────────────────────────────────────────── */
@@ -663,13 +861,23 @@ static void sfa_draw_speed_hud(uint32_t *px, int W, int H,
     sr_draw_text_shadow(px, W, H, x, y, sfa_speed_names[s->speed_level],
                          SFA_HUD_ACCENT, SFA_HUD_SHADOW);
 
-    /* Speed bar */
+    /* Speed bar — target speed (dim) with actual speed overlay (bright) */
     int bar_y = y + 10;
     int bar_w = 60;
     int bar_h = 5;
+    float max_speed = sfa_speed_values[SFA_NUM_SPEEDS - 1];
     sfa_draw_rect(px, W, H, x, bar_y, x + bar_w, bar_y + bar_h, SFA_HUD_BG);
 
-    int fill_w = (bar_w * s->speed_level) / (SFA_NUM_SPEEDS - 1);
+    /* Target speed (dim background bar) */
+    float target_speed = sfa_speed_values[s->speed_level];
+    int target_w = (max_speed > 0) ? (int)(bar_w * target_speed / max_speed) : 0;
+    if (target_w > 0) {
+        uint32_t dim_col = 0x60335577;
+        sfa_draw_rect(px, W, H, x, bar_y, x + target_w, bar_y + bar_h, dim_col);
+    }
+
+    /* Actual speed (bright fill) */
+    int fill_w = (max_speed > 0) ? (int)(bar_w * s->current_speed / max_speed) : 0;
     if (fill_w > 0) {
         uint32_t fill_col = s->speed_level == SFA_SPEED_FULL ? SFA_HUD_WARN : SFA_HUD_ACCENT;
         sfa_draw_rect(px, W, H, x, bar_y, x + fill_w, bar_y + bar_h, fill_col);
@@ -806,6 +1014,16 @@ static bool sfa_handle_touch_began(float sx, float sy) {
         return true;
     }
 
+    /* Check target click (on-screen reticle or off-screen indicator) */
+    {
+        int tdx = (int)fx - sfa.target_screen_x;
+        int tdy = (int)fy - sfa.target_screen_y;
+        if (tdx * tdx + tdy * tdy < 20 * 20) {
+            sfa.target_selected = !sfa.target_selected;
+            return true;
+        }
+    }
+
     /* Check steering circle */
     float sdx = fx - SFA_VCTRL_STEER_CX;
     float sdy = fy - SFA_VCTRL_STEER_CY;
@@ -939,9 +1157,44 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
     );
     sr_mat4 vp = sr_mat4_mul(proj, view);
 
+    int W = fb_ptr->width, H = fb_ptr->height;
+    uint32_t *px = fb_ptr->color;
+
     /* Draw world */
     sfa_draw_starfield(fb_ptr, &vp, s->x, s->z);
     sfa_draw_arena_boundary(fb_ptr, &vp);
+
+    /* Draw target (Klingon ship) */
+    sfa_draw_target_ship(fb_ptr, &vp, sfa.target_x, sfa.target_z);
+
+    /* Project target to screen for reticle/indicator */
+    {
+        int tsx, tsy;
+        float tw;
+        bool on_screen = sfa_project_to_screen(&vp, sfa.target_x, 0.0f, sfa.target_z,
+                                                 W, H, &tsx, &tsy, &tw);
+        sfa.target_screen_x = tsx;
+        sfa.target_screen_y = tsy;
+        sfa.target_on_screen = on_screen && tsx >= 0 && tsx < W && tsy >= 0 && tsy < H;
+
+        if (sfa.target_on_screen) {
+            sfa_draw_reticle(px, W, H, tsx, tsy, sfa.target_selected);
+        } else {
+            /* Clamp to screen edge */
+            int cx = tsx, cy = tsy;
+            if (!on_screen) {
+                /* Behind camera — put indicator at bottom edge toward target */
+                float dx = sfa.target_x - s->x;
+                float dz = sfa.target_z - s->z;
+                float a = atan2f(-dx, dz) - s->visual_heading;
+                cx = W / 2 + (int)(sinf(a) * W * 0.4f);
+                cy = (cosf(a) < 0) ? H - 12 : 12;
+            }
+            sfa_draw_offscreen_indicator(px, W, H, cx, cy, sfa.target_selected);
+            sfa.target_screen_x = cx;
+            sfa.target_screen_y = cy;
+        }
+    }
 
     /* Draw ship */
     sfa_draw_ship(fb_ptr, &vp, s);
