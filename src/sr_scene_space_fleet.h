@@ -119,13 +119,6 @@ typedef struct {
     float    touch_steer_cy;
     float    touch_steer_angle;   /* current angle from touch */
     bool     touch_throttle;      /* throttle touch active */
-
-    /* Target */
-    float    target_x, target_z;  /* target world position */
-    bool     target_selected;     /* is the target currently selected? */
-    int      target_screen_x;     /* last projected screen position */
-    int      target_screen_y;
-    bool     target_on_screen;    /* was target visible last frame? */
 } sfa_state;
 
 static sfa_state sfa;
@@ -160,20 +153,16 @@ static void sfa_init(void) {
     /* Player ship — default orange */
     sfa_init_ship(&sfa.player, 0.0f, 0.0f, 0.0f, 0, 0);
 
-    /* NPC ship — Klingon green, parked nearby */
-    sfa.npc_count = 1;
-    sfa_init_ship(&sfa.npcs[0], 15.0f, 20.0f, SFA_PI * 0.75f,
-                  0xFF33AA55, 0xFF55DD77);   /* green hull */
+    /* NPC Klingon ships */
+    sfa.npc_count = 2;
+    sfa_init_ship(&sfa.npcs[0], 15.0f, 20.0f, SFA_PI * 0.75f, 0, 0);
     sfa.npcs[0].speed_level = SFA_SPEED_QUARTER;
+    sfa_init_ship(&sfa.npcs[1], 30.0f, 20.0f, SFA_PI * 0.25f, 0, 0);
+    sfa.npcs[1].speed_level = SFA_SPEED_HALF;
 
     sfa.hovered_npc = -1;
     sfa.selected_npc = -1;
     sfa.cam_target_yaw = 0.0f;
-
-    /* Place a target ship in the arena */
-    sfa.target_x = 30.0f;
-    sfa.target_z = 20.0f;
-    sfa.target_selected = false;
 
     sfa.initialized = true;
 }
@@ -941,7 +930,7 @@ static void sfa_draw_targeting_brackets(uint32_t *px, int W, int H,
 
 static void sfa_update_hover(const sr_mat4 *vp, int fb_w, int fb_h) {
     sfa.hovered_npc = -1;
-    float best_dist = 25.0f;  /* pixel threshold for hover */
+    float best_dist = 50.0f;  /* pixel threshold for hover (generous) */
 
     for (int i = 0; i < sfa.npc_count; i++) {
         sfa_ship *npc = &sfa.npcs[i];
@@ -1176,16 +1165,6 @@ static bool sfa_handle_touch_began(float sx, float sy) {
         return true;
     }
 
-    /* Check target click (on-screen reticle or off-screen indicator) */
-    {
-        int tdx = (int)fx - sfa.target_screen_x;
-        int tdy = (int)fy - sfa.target_screen_y;
-        if (tdx * tdx + tdy * tdy < 20 * 20) {
-            sfa.target_selected = !sfa.target_selected;
-            return true;
-        }
-    }
-
     /* Check steering circle */
     float sdx = fx - SFA_VCTRL_STEER_CX;
     float sdy = fy - SFA_VCTRL_STEER_CY;
@@ -1260,16 +1239,6 @@ static bool sfa_handle_mouse_click(float sx, float sy) {
     /* Re-run hover detection with cached VP so we have fresh hovered_npc */
     if (sfa.last_fb_w > 0)
         sfa_update_hover(&sfa.last_vp, sfa.last_fb_w, sfa.last_fb_h);
-
-    /* Also check the Klingon target ship reticle */
-    {
-        int tdx = (int)fx - sfa.target_screen_x;
-        int tdy = (int)fy - sfa.target_screen_y;
-        if (tdx * tdx + tdy * tdy < 20 * 20) {
-            sfa.target_selected = !sfa.target_selected;
-            return true;  /* consumed */
-        }
-    }
 
     /* If hovering an NPC, select/deselect it */
     if (sfa.hovered_npc >= 0) {
@@ -1385,38 +1354,6 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
     /* Draw world */
     sfa_draw_starfield(fb_ptr, &vp, s->x, s->z);
     sfa_draw_arena_boundary(fb_ptr, &vp);
-
-    /* Draw target (Klingon ship — static, no heading) */
-    sfa_draw_target_ship(fb_ptr, &vp, sfa.target_x, sfa.target_z, 0.0f);
-
-    /* Project target to screen for reticle/indicator */
-    {
-        int tsx, tsy;
-        float tw;
-        bool on_screen = sfa_project_to_screen(&vp, sfa.target_x, 0.0f, sfa.target_z,
-                                                 W, H, &tsx, &tsy, &tw);
-        sfa.target_screen_x = tsx;
-        sfa.target_screen_y = tsy;
-        sfa.target_on_screen = on_screen && tsx >= 0 && tsx < W && tsy >= 0 && tsy < H;
-
-        if (sfa.target_on_screen) {
-            sfa_draw_reticle(px, W, H, tsx, tsy, sfa.target_selected);
-        } else {
-            /* Clamp to screen edge */
-            int cx = tsx, cy = tsy;
-            if (!on_screen) {
-                /* Behind camera — put indicator at bottom edge toward target */
-                float dx = sfa.target_x - s->x;
-                float dz = sfa.target_z - s->z;
-                float a = atan2f(-dx, dz) - s->visual_heading;
-                cx = W / 2 + (int)(sinf(a) * W * 0.4f);
-                cy = (cosf(a) < 0) ? H - 12 : 12;
-            }
-            sfa_draw_offscreen_indicator(px, W, H, cx, cy, sfa.target_selected);
-            sfa.target_screen_x = cx;
-            sfa.target_screen_y = cy;
-        }
-    }
 
     /* Draw player ship */
     sfa_draw_ship(fb_ptr, &vp, s);
