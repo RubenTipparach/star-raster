@@ -133,10 +133,6 @@ static void draw_menu(sr_framebuffer *fb_ptr) {
         sr_draw_text_shadow(px, W, H, 150, 115 + i * 15, line, color, shadow);
     }
 
-    sr_draw_text_shadow(px, W, H, 130, 180, "UP/DOWN  SELECT", gray, shadow);
-    sr_draw_text_shadow(px, W, H, 130, 195, "ENTER    START", gray, shadow);
-    sr_draw_text_shadow(px, W, H, 130, 210, "TAB/ESC  MENU", gray, shadow);
-    sr_draw_text_shadow(px, W, H, 130, 225, "TAP      SELECT/BACK", gray, shadow);
 }
 
 #endif /* SR_MENU_H */

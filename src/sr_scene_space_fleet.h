@@ -5,6 +5,7 @@
 
 #include <math.h>
 #include <stdbool.h>
+#include "not_64_palette_lut.h"
 
 /* ── Constants ───────────────────────────────────────────────────── */
 
@@ -51,6 +52,25 @@ static const char *sfa_speed_names[SFA_NUM_SPEEDS] = {
 #define SFA_HUD_WARN       0xFF4466FF
 #define SFA_HUD_SHADOW     0xFF000000
 
+/* ── Palette helper ──────────────────────────────────────────────── */
+
+static inline uint32_t sfa_pal_abgr(int idx) {
+    uint32_t rgb = pal_colors[idx];
+    uint32_t r = (rgb >> 16) & 0xFF;
+    uint32_t g = (rgb >> 8) & 0xFF;
+    uint32_t b = rgb & 0xFF;
+    return 0xFF000000 | (b << 16) | (g << 8) | r;
+}
+
+/* Shade a palette color: shade 0=darkest, PAL_MID_ROW=normal, PAL_SHADES-1=brightest */
+static inline uint32_t sfa_pal_shade(int base_idx, int shade) {
+    if (shade < 0) shade = 0;
+    if (shade >= PAL_SHADES) shade = PAL_SHADES - 1;
+    if (base_idx < 0 || base_idx >= PAL_COLORS) base_idx = 64; /* black */
+    int shifted = pal_shift_lut[shade][base_idx];
+    return sfa_pal_abgr(shifted);
+}
+
 /* ── Ship state ──────────────────────────────────────────────────── */
 
 typedef struct {
@@ -78,6 +98,13 @@ typedef struct {
     float    touch_steer_cy;
     float    touch_steer_angle;   /* current angle from touch */
     bool     touch_throttle;      /* throttle touch active */
+
+    /* Target */
+    float    target_x, target_z;  /* target world position */
+    bool     target_selected;     /* is the target currently selected? */
+    int      target_screen_x;     /* last projected screen position */
+    int      target_screen_y;
+    bool     target_on_screen;    /* was target visible last frame? */
 } sfa_state;
 
 static sfa_state sfa;
@@ -104,6 +131,11 @@ static void sfa_init(void) {
 
     for (int i = 0; i < 6; i++)
         sfa.player.shields[i] = 100.0f;
+
+    /* Place a target ship in the arena */
+    sfa.target_x = 30.0f;
+    sfa.target_z = 20.0f;
+    sfa.target_selected = false;
 
     sfa.initialized = true;
 }
@@ -144,7 +176,7 @@ static void sfa_update(float dt) {
 
     /* Move ship */
     float speed = sfa_speed_values[s->speed_level];
-    s->x += sinf(s->heading) * speed * dt;
+    s->x -= sinf(s->heading) * speed * dt;
     s->z += cosf(s->heading) * speed * dt;
 
     /* Clamp to arena bounds */
@@ -200,7 +232,7 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
 
     sr_mat4 model = sr_mat4_mul(
         sr_mat4_translate(s->x, 0.0f, s->z),
-        sr_mat4_rotate_y(h)
+        sr_mat4_rotate_y(-h)
     );
     sr_mat4 mvp = sr_mat4_mul(*vp, model);
 
@@ -882,9 +914,9 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
     /* ── Pitched camera: behind and above the ship, looking forward ── */
     /* Camera sits behind the ship (opposite of heading) and above,
      * looking at a point ahead of the ship. This gives a 3/4 view. */
-    float cam_back_x = -sinf(s->visual_heading) * SFA_CAM_BACK;
+    float cam_back_x =  sinf(s->visual_heading) * SFA_CAM_BACK;
     float cam_back_z = -cosf(s->visual_heading) * SFA_CAM_BACK;
-    float look_fwd_x =  sinf(s->visual_heading) * SFA_CAM_LOOK_AHEAD;
+    float look_fwd_x = -sinf(s->visual_heading) * SFA_CAM_LOOK_AHEAD;
     float look_fwd_z =  cosf(s->visual_heading) * SFA_CAM_LOOK_AHEAD;
 
     sr_vec3 eye = {
