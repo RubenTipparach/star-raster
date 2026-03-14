@@ -110,6 +110,8 @@ typedef struct {
     int      selected_npc;        /* NPC index locked on, -1 = none */
     float    mouse_fb_x, mouse_fb_y;  /* mouse pos in fb coords */
     float    cam_target_yaw;      /* smoothed camera yaw toward target */
+    sr_mat4  last_vp;             /* cached VP matrix for input-time hover */
+    int      last_fb_w, last_fb_h;
 
     /* Touch controls */
     bool     touch_steering;      /* is user dragging to steer? */
@@ -231,7 +233,7 @@ static void sfa_update(float dt) {
     if (s->z >  SFA_ARENA_SIZE) s->z =  SFA_ARENA_SIZE;
     if (s->z < -SFA_ARENA_SIZE) s->z = -SFA_ARENA_SIZE;
 
-    /* Update NPC ships (simple patrol — they just fly in circles) */
+    /* Update NPC ships (patrol in circles, same physics as player) */
     for (int i = 0; i < sfa.npc_count; i++) {
         sfa_ship *npc = &sfa.npcs[i];
         /* Slow turn to patrol in a circle */
@@ -249,9 +251,19 @@ static void sfa_update(float dt) {
         npc->visual_heading += nvdiff * 8.0f * dt;
         npc->visual_heading = sfa_normalize_angle(npc->visual_heading);
 
-        float nspeed = sfa_speed_values[npc->speed_level];
-        npc->x += sinf(npc->heading) * nspeed * dt;
-        npc->z += cosf(npc->heading) * nspeed * dt;
+        /* Accelerate toward target speed (same as player) */
+        float ntarget_speed = sfa_speed_values[npc->speed_level];
+        if (npc->current_speed < ntarget_speed) {
+            npc->current_speed += accel * dt;
+            if (npc->current_speed > ntarget_speed) npc->current_speed = ntarget_speed;
+        } else if (npc->current_speed > ntarget_speed) {
+            npc->current_speed -= accel * dt * 1.5f;
+            if (npc->current_speed < ntarget_speed) npc->current_speed = ntarget_speed;
+        }
+
+        /* Move in facing direction (same convention as player: -sinf, +cosf) */
+        npc->x -= sinf(npc->heading) * npc->current_speed * dt;
+        npc->z += cosf(npc->heading) * npc->current_speed * dt;
 
         /* Clamp NPC to arena */
         if (npc->x >  SFA_ARENA_SIZE) npc->x =  SFA_ARENA_SIZE;
@@ -654,7 +666,7 @@ static void sfa_draw_arena_boundary(sr_framebuffer *fb_ptr, const sr_mat4 *vp) {
 
 /* Draw Klingon Bird of Prey — swept wings, central command pod, neck */
 static void sfa_draw_target_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
-                                   float tx, float tz) {
+                                   float tx, float tz, float heading) {
     uint32_t hull_t = sfa_pal_abgr(30); /* 239063 dark green */
     uint32_t hull_s = sfa_pal_abgr(29); /* 165a4c darker green */
     uint32_t hull_b = sfa_pal_abgr(35); /* 374e4a darkest */
@@ -665,7 +677,10 @@ static void sfa_draw_target_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
     uint32_t head_s = sfa_pal_abgr(30);
     uint32_t gun_col = sfa_pal_abgr(15); /* e83b3b red — disruptor */
 
-    sr_mat4 model = sr_mat4_translate(tx, 0.0f, tz);
+    sr_mat4 model = sr_mat4_mul(
+        sr_mat4_translate(tx, 0.0f, tz),
+        sr_mat4_rotate_y(-heading)
+    );
     sr_mat4 mvp = sr_mat4_mul(*vp, model);
 
     /* Central body (aft section) */
@@ -1230,13 +1245,31 @@ static void sfa_handle_mouse_move(float sx, float sy) {
     screen_to_fb(sx, sy, &fx, &fy);
     sfa.mouse_fb_x = fx;
     sfa.mouse_fb_y = fy;
+
+    /* Update hover using cached VP matrix from last frame */
+    if (sfa.last_fb_w > 0)
+        sfa_update_hover(&sfa.last_vp, sfa.last_fb_w, sfa.last_fb_h);
 }
 
-static void sfa_handle_mouse_click(float sx, float sy) {
+static bool sfa_handle_mouse_click(float sx, float sy) {
     float fx, fy;
     screen_to_fb(sx, sy, &fx, &fy);
     sfa.mouse_fb_x = fx;
     sfa.mouse_fb_y = fy;
+
+    /* Re-run hover detection with cached VP so we have fresh hovered_npc */
+    if (sfa.last_fb_w > 0)
+        sfa_update_hover(&sfa.last_vp, sfa.last_fb_w, sfa.last_fb_h);
+
+    /* Also check the Klingon target ship reticle */
+    {
+        int tdx = (int)fx - sfa.target_screen_x;
+        int tdy = (int)fy - sfa.target_screen_y;
+        if (tdx * tdx + tdy * tdy < 20 * 20) {
+            sfa.target_selected = !sfa.target_selected;
+            return true;  /* consumed */
+        }
+    }
 
     /* If hovering an NPC, select/deselect it */
     if (sfa.hovered_npc >= 0) {
@@ -1244,9 +1277,10 @@ static void sfa_handle_mouse_click(float sx, float sy) {
             sfa.selected_npc = -1;  /* deselect */
         else
             sfa.selected_npc = sfa.hovered_npc;
-    } else {
-        sfa.selected_npc = -1;  /* click empty space to deselect */
+        return true;  /* consumed — don't pass to steering */
     }
+
+    return false;  /* not consumed — let touch_began handle it */
 }
 
 /* ── Key input ───────────────────────────────────────────────────── */
@@ -1340,6 +1374,11 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
     int W = fb_ptr->width, H = fb_ptr->height;
     uint32_t *px = fb_ptr->color;
 
+    /* Cache VP matrix for input-time hover detection */
+    sfa.last_vp = vp;
+    sfa.last_fb_w = W;
+    sfa.last_fb_h = H;
+
     /* Update hover detection */
     sfa_update_hover(&vp, W, H);
 
@@ -1347,8 +1386,8 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
     sfa_draw_starfield(fb_ptr, &vp, s->x, s->z);
     sfa_draw_arena_boundary(fb_ptr, &vp);
 
-    /* Draw target (Klingon ship) */
-    sfa_draw_target_ship(fb_ptr, &vp, sfa.target_x, sfa.target_z);
+    /* Draw target (Klingon ship — static, no heading) */
+    sfa_draw_target_ship(fb_ptr, &vp, sfa.target_x, sfa.target_z, 0.0f);
 
     /* Project target to screen for reticle/indicator */
     {
@@ -1382,9 +1421,10 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
     /* Draw player ship */
     sfa_draw_ship(fb_ptr, &vp, s);
 
-    /* Draw NPC ships */
+    /* Draw NPC ships (all Klingon Bird of Prey) */
     for (int i = 0; i < sfa.npc_count; i++)
-        sfa_draw_ship(fb_ptr, &vp, &sfa.npcs[i]);
+        sfa_draw_target_ship(fb_ptr, &vp, sfa.npcs[i].x, sfa.npcs[i].z,
+                             sfa.npcs[i].visual_heading);
 
     /* Draw targeting brackets on NPC ships */
     {
