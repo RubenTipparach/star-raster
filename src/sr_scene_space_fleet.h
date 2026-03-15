@@ -261,20 +261,23 @@ static void sfa_update(float dt) {
         if (npc->z < -SFA_ARENA_SIZE) npc->z = -SFA_ARENA_SIZE;
     }
 
-    /* Smooth camera yaw toward selected target */
+    /* Smooth camera yaw toward selected target (Phantom-Nebula approach) */
     if (sfa.selected_npc >= 0 && sfa.selected_npc < sfa.npc_count) {
         sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
         float dx = tgt->x - s->x;
         float dz = tgt->z - s->z;
-        float angle_to_target = atan2f(dx, dz);
-        /* Blend between ship heading and target direction */
-        float cam_diff = sfa_normalize_angle(angle_to_target - sfa.cam_target_yaw);
-        sfa.cam_target_yaw += cam_diff * 3.0f * dt;
+        /* Camera orbits to opposite side of target — so it looks toward target */
+        float target_yaw = atan2f(-dx, -dz);
+        /* Shortest-path yaw interpolation with exponential decay */
+        float cam_diff = sfa_normalize_angle(target_yaw - sfa.cam_target_yaw);
+        float t = 1.0f - expf(-5.0f * dt);
+        sfa.cam_target_yaw += cam_diff * t;
         sfa.cam_target_yaw = sfa_normalize_angle(sfa.cam_target_yaw);
     } else {
         /* No target — follow ship heading */
         float cam_diff = sfa_normalize_angle(s->visual_heading - sfa.cam_target_yaw);
-        sfa.cam_target_yaw += cam_diff * 5.0f * dt;
+        float t = 1.0f - expf(-5.0f * dt);
+        sfa.cam_target_yaw += cam_diff * t;
         sfa.cam_target_yaw = sfa_normalize_angle(sfa.cam_target_yaw);
     }
 }
@@ -1391,11 +1394,8 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
 
             uint32_t bracket_col;
             if (i == sfa.selected_npc) {
-                /* Selected: bright blue glow with pulse */
-                float pulse = 0.7f + 0.3f * sinf(sfa.time * 6.0f);
-                uint8_t b = (uint8_t)(255.0f * pulse);
-                uint8_t g = (uint8_t)(220.0f * pulse);
-                bracket_col = 0xFF000000 | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)(100);
+                /* Selected: solid bright blue */
+                bracket_col = 0xFFFF6464;  /* ABGR: bright cyan-blue */
                 /* Draw double brackets for selected */
                 sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half + 2, bracket_col);
                 sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half, bracket_col);
