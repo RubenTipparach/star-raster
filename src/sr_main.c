@@ -562,7 +562,9 @@ static void event(const sapp_event *ev) {
             return;
         }
         if (ev->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && ev->num_touches > 0) {
-            sfa_handle_touch_began(ev->touches[0].pos_x, ev->touches[0].pos_y);
+            /* Try targeting first; only pass to steering if not consumed */
+            if (!sfa_handle_mouse_click(ev->touches[0].pos_x, ev->touches[0].pos_y))
+                sfa_handle_touch_began(ev->touches[0].pos_x, ev->touches[0].pos_y);
             return;
         }
         if (ev->type == SAPP_EVENTTYPE_TOUCHES_MOVED && ev->num_touches > 0) {
