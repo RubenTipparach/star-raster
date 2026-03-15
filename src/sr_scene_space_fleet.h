@@ -19,14 +19,15 @@
 #define SFA_SPEED_STOP   0
 #define SFA_SPEED_QUARTER 1
 #define SFA_SPEED_HALF   2
-#define SFA_SPEED_FULL   3
-#define SFA_NUM_SPEEDS   4
+#define SFA_SPEED_3QUARTER 3
+#define SFA_SPEED_FULL   4
+#define SFA_NUM_SPEEDS   5
 
 static const float sfa_speed_values[SFA_NUM_SPEEDS] = {
-    0.0f, 3.0f, 6.0f, 12.0f
+    0.0f, 3.0f, 6.0f, 9.0f, 12.0f
 };
 static const char *sfa_speed_names[SFA_NUM_SPEEDS] = {
-    "ALL STOP", "1/4 IMPULSE", "1/2 IMPULSE", "FULL IMPULSE"
+    "ALL STOP", "1/4 IMPULSE", "1/2 IMPULSE", "3/4 IMPULSE", "FULL IMPULSE"
 };
 
 /* Ship turn rate (radians/sec) */
@@ -181,7 +182,7 @@ static void sfa_update(float dt) {
     sfa_ship *s = &sfa.player;
     sfa.time += dt;
 
-    /* Apply continuous keyboard steering */
+    /* Apply continuous keyboard steering (positive heading = screen-right) */
     if (sfa_key_left)  s->target_heading -= SFA_TURN_RATE * dt;
     if (sfa_key_right) s->target_heading += SFA_TURN_RATE * dt;
 
@@ -250,7 +251,7 @@ static void sfa_update(float dt) {
             if (npc->current_speed < ntarget_speed) npc->current_speed = ntarget_speed;
         }
 
-        /* Move in facing direction (same convention as player: -sinf, +cosf) */
+        /* Move in facing direction */
         npc->x -= sinf(npc->heading) * npc->current_speed * dt;
         npc->z += cosf(npc->heading) * npc->current_speed * dt;
 
@@ -266,8 +267,8 @@ static void sfa_update(float dt) {
         sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
         float dx = tgt->x - s->x;
         float dz = tgt->z - s->z;
-        /* Camera orbits to opposite side of target — so it looks toward target */
-        float target_yaw = atan2f(-dx, -dz);
+        /* Camera yaw faces toward target */
+        float target_yaw = atan2f(-dx, dz);
         /* Shortest-path yaw interpolation with exponential decay */
         float cam_diff = sfa_normalize_angle(target_yaw - sfa.cam_target_yaw);
         float t = 1.0f - expf(-5.0f * dt);
@@ -370,14 +371,14 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
             /* Top face wedge */
             sr_draw_triangle(fb_ptr,
                 sr_vert_c(0, sy + sh, sz, 0.5f, 0.5f, hull_top),
-                sr_vert_c(x0, sy + sh, z0, 0, 0, hull_top),
                 sr_vert_c(x1, sy + sh, z1, 1, 0, hull_top),
+                sr_vert_c(x0, sy + sh, z0, 0, 0, hull_top),
                 NULL, &mvp);
             /* Bottom face wedge */
             sr_draw_triangle(fb_ptr,
                 sr_vert_c(0, sy - sh, sz, 0.5f, 0.5f, hull_bot),
-                sr_vert_c(x1, sy - sh, z1, 1, 0, hull_bot),
                 sr_vert_c(x0, sy - sh, z0, 0, 0, hull_bot),
+                sr_vert_c(x1, sy - sh, z1, 1, 0, hull_bot),
                 NULL, &mvp);
             /* Side rim */
             sr_draw_quad(fb_ptr,
@@ -1082,24 +1083,161 @@ static void sfa_draw_mobile_controls(uint32_t *px, int W, int H, sfa_ship *s) {
     /* Outer ring */
     sfa_draw_ring(px, W, H, scx, scy, sr_radius, 2, 0x60FFFFFF);
 
-    /* Direction indicator — small dot showing current heading */
+    /* Target heading line — shown when ship is rotating */
     float vis_h = s->visual_heading;
-    int dot_x = scx + (int)(sinf(vis_h) * (sr_radius - 6));
-    int dot_y = scy - (int)(cosf(vis_h) * (sr_radius - 6));
-    sfa_draw_circle(px, W, H, dot_x, dot_y, 3, SFA_HUD_ACCENT);
+    {
+        float angle_diff = sfa_normalize_angle(s->target_heading - s->heading);
+        if (angle_diff > 0.01f || angle_diff < -0.01f) {
+            float th = s->target_heading;
+            int steps = sr_radius - 6;
+            uint32_t tgt_col = 0xFF00AAFF; /* orange target line */
+            for (int i = 0; i < steps; i++) {
+                float t = (float)i / (float)steps;
+                int lx = scx + (int)(sinf(th) * t * (sr_radius - 6));
+                int ly = scy - (int)(cosf(th) * t * (sr_radius - 6));
+                if (lx >= 0 && lx < W && ly >= 0 && ly < H)
+                    px[ly * W + lx] = tgt_col;
+            }
+            /* Target dot at end */
+            int tgt_x = scx + (int)(sinf(th) * (sr_radius - 6));
+            int tgt_y = scy - (int)(cosf(th) * (sr_radius - 6));
+            sfa_draw_circle(px, W, H, tgt_x, tgt_y, 2, tgt_col);
+        }
+    }
 
-    /* If steering active, show target heading */
+    /* If touch steering active, show touch target too */
     if (sfa.touch_steering) {
         int tgt_x = scx + (int)(sinf(sfa.touch_steer_angle) * (sr_radius - 6));
         int tgt_y = scy - (int)(cosf(sfa.touch_steer_angle) * (sr_radius - 6));
         sfa_draw_circle(px, W, H, tgt_x, tgt_y, 2, SFA_HUD_WARN);
     }
 
+    /* Blue arrow icon centered on dial, rotated with 2D rotation matrix */
+    {
+        /* Arrow shape in local space (pointing UP, centered at origin) */
+        /* Chevron: nose, left wing, tail notch, right wing */
+        float arrow_pts[][2] = {
+            {  0.0f, -10.0f },  /* 0: nose (top) */
+            { -6.0f,   4.0f },  /* 1: left wing */
+            {  0.0f,   1.0f },  /* 2: tail notch */
+            {  6.0f,   4.0f },  /* 3: right wing */
+        };
+        int npts = 4;
+
+        /* 2D rotation matrix: rotate by vis_h */
+        /* dial convention: +heading rotates clockwise on dial (sin,cos) */
+        float c = cosf(vis_h), si = sinf(vis_h);
+
+        /* Transform all points: x' = x*cos - y*sin, y' = x*sin + y*cos */
+        int sx[4], sy[4];
+        for (int i = 0; i < npts; i++) {
+            float lx = arrow_pts[i][0], ly = arrow_pts[i][1];
+            float rx = lx * c - ly * si;
+            float ry = lx * si + ly * c;
+            sx[i] = scx + (int)(rx);
+            sy[i] = scy + (int)(ry);
+        }
+
+        uint32_t arrow_col = 0xFFFF8833; /* ABGR: blue */
+
+        /* Fill triangle: nose(0), left(1), notch(2) */
+        for (int i = 0; i <= 30; i++) {
+            float t = (float)i / 30.0f;
+            /* Edge nose→left */
+            int ax = sx[0] + (int)((sx[1] - sx[0]) * t);
+            int ay = sy[0] + (int)((sy[1] - sy[0]) * t);
+            /* Edge nose→notch */
+            int bx = sx[0] + (int)((sx[2] - sx[0]) * t);
+            int by = sy[0] + (int)((sy[2] - sy[0]) * t);
+            int len = (int)(sqrtf((float)((bx-ax)*(bx-ax)+(by-ay)*(by-ay)))) + 1;
+            for (int j = 0; j <= len; j++) {
+                float u = (len > 0) ? (float)j / (float)len : 0;
+                int px2 = ax + (int)((bx - ax) * u);
+                int py2 = ay + (int)((by - ay) * u);
+                if (px2 >= 0 && px2 < W && py2 >= 0 && py2 < H)
+                    px[py2 * W + px2] = arrow_col;
+            }
+        }
+        /* Fill triangle: nose(0), notch(2), right(3) */
+        for (int i = 0; i <= 30; i++) {
+            float t = (float)i / 30.0f;
+            int ax = sx[0] + (int)((sx[3] - sx[0]) * t);
+            int ay = sy[0] + (int)((sy[3] - sy[0]) * t);
+            int bx = sx[0] + (int)((sx[2] - sx[0]) * t);
+            int by = sy[0] + (int)((sy[2] - sy[0]) * t);
+            int len = (int)(sqrtf((float)((bx-ax)*(bx-ax)+(by-ay)*(by-ay)))) + 1;
+            for (int j = 0; j <= len; j++) {
+                float u = (len > 0) ? (float)j / (float)len : 0;
+                int px2 = ax + (int)((bx - ax) * u);
+                int py2 = ay + (int)((by - ay) * u);
+                if (px2 >= 0 && px2 < W && py2 >= 0 && py2 < H)
+                    px[py2 * W + px2] = arrow_col;
+            }
+        }
+    }
+
+    /* North (heading=0) indicator — yellow line, shown while rotating */
+    {
+        float angle_diff = sfa_normalize_angle(s->target_heading - s->heading);
+        if (angle_diff > 0.01f || angle_diff < -0.01f) {
+            /* Draw yellow "N" line at heading 0 on the dial (top = 0) */
+            uint32_t yellow = 0xFF00FFFF; /* ABGR yellow */
+            int n_end_x = scx;
+            int n_end_y = scy - (sr_radius - 2);
+            for (int i = 0; i < sr_radius - 6; i++) {
+                float t = (float)i / (float)(sr_radius - 6);
+                int lx = scx;
+                int ly = scy - (int)(t * (sr_radius - 2));
+                if (lx >= 0 && lx < W && ly >= 0 && ly < H)
+                    px[ly * W + lx] = yellow;
+            }
+            sr_draw_text_shadow(px, W, H, n_end_x - 2, n_end_y - 8,
+                                 "N", yellow, SFA_HUD_SHADOW);
+        }
+    }
+
+    /* Enemy dots on dial — show NPC bearings relative to player */
+    {
+        sfa_ship *player = &sfa.player;
+        for (int i = 0; i < sfa.npc_count; i++) {
+            sfa_ship *npc = &sfa.npcs[i];
+            float dx = npc->x - player->x;
+            float dz = npc->z - player->z;
+            float bearing = atan2f(dx, dz);  /* absolute bearing to target */
+            float dist = sqrtf(dx * dx + dz * dz);
+
+            /* Map distance to radius on dial (closer = further from center) */
+            float max_range = 60.0f;
+            float t = dist / max_range;
+            if (t > 1.0f) t = 1.0f;
+            float dot_r = 4.0f + t * (sr_radius - 8);
+
+            int ex = scx + (int)(sinf(bearing) * dot_r);
+            int ey = scy - (int)(cosf(bearing) * dot_r);
+
+            /* Selected target uses bracket color, others use dim red */
+            uint32_t dot_col = (i == sfa.selected_npc)
+                ? 0xFFFF6464   /* same as selected bracket: bright cyan-blue */
+                : 0xFF4444CC;  /* dim red */
+            int dot_size = (i == sfa.selected_npc) ? 3 : 2;
+            sfa_draw_circle(px, W, H, ex, ey, dot_size, dot_col);
+        }
+    }
+
     /* Center dot */
     sfa_draw_circle(px, W, H, scx, scy, 2, 0x40FFFFFF);
 
+    /* Degree labels around dial: 0 (top), 90 (right), 180 (bottom), 270 (left) */
+    {
+        int lr = sr_radius + 5;
+        sr_draw_text_shadow(px, W, H, scx - 3, scy - lr - 4, "0", 0xFF888888, SFA_HUD_SHADOW);
+        sr_draw_text_shadow(px, W, H, scx + lr, scy - 3, "90", 0xFF888888, SFA_HUD_SHADOW);
+        sr_draw_text_shadow(px, W, H, scx - 6, scy + lr - 2, "180", 0xFF888888, SFA_HUD_SHADOW);
+        sr_draw_text_shadow(px, W, H, scx - lr - 12, scy - 3, "270", 0xFF888888, SFA_HUD_SHADOW);
+    }
+
     /* Label */
-    sr_draw_text_shadow(px, W, H, scx - 12, scy - sr_radius - 10,
+    sr_draw_text_shadow(px, W, H, scx - 12, scy - sr_radius - 14,
                          "HELM", SFA_HUD_TEXT, SFA_HUD_SHADOW);
 
     /* ── Right side: throttle buttons ── */
@@ -1120,6 +1258,7 @@ static void sfa_draw_mobile_controls(uint32_t *px, int W, int H, sfa_ship *s) {
 
         char label[8];
         if (i == 0) snprintf(label, sizeof(label), "STOP");
+        else if (i == SFA_NUM_SPEEDS - 1) snprintf(label, sizeof(label), "FULL");
         else snprintf(label, sizeof(label), "%d/4", i);
         sr_draw_text_shadow(px, W, H, bx + 4, by + 5, label, fg, SFA_HUD_SHADOW);
     }
@@ -1147,6 +1286,17 @@ static void sfa_draw_hud(sr_framebuffer *fb_ptr, sfa_ship *s) {
         int tw = (int)strlen(buf) * 6;
         sr_draw_text_shadow(px, W, H, W - tw - 4, 3, buf,
                              s->hull > 50 ? SFA_HUD_BRIGHT : SFA_HUD_WARN, SFA_HUD_SHADOW);
+    }
+
+    /* DEBUG: heading/target degrees */
+    {
+        char dbg[64];
+        int hdeg = (int)(s->heading * 180.0f / SFA_PI);
+        if (hdeg < 0) hdeg += 360;
+        int tdeg = (int)(s->target_heading * 180.0f / SFA_PI);
+        if (tdeg < 0) tdeg += 360;
+        snprintf(dbg, sizeof(dbg), "H:%03d T:%03d", hdeg, tdeg);
+        sr_draw_text_shadow(px, W, H, W / 2 - 36, 16, dbg, 0xFF00FFFF, SFA_HUD_SHADOW);
     }
 
     /* Shield hex display (bottom-left) */
@@ -1369,6 +1519,28 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
 
     /* Draw player ship */
     sfa_draw_ship(fb_ptr, &vp, s);
+
+    /* 3D North arrow — yellow line from ship extending in +Z (heading 0) */
+    {
+        float ny = 0.5f;      /* height above ground plane */
+        float nlen = 4.0f;    /* arrow length */
+        float nw = 0.03f;     /* line half-width */
+        uint32_t n_col = 0xFF00FFFF; /* ABGR yellow */
+
+        /* Shaft: thin vertical quad from ship to ship+Z */
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(s->x - nw, ny, s->z,        0,0, n_col),
+            sr_vert_c(s->x - nw, ny, s->z + nlen, 0,1, n_col),
+            sr_vert_c(s->x + nw, ny, s->z + nlen, 1,1, n_col),
+            sr_vert_c(s->x + nw, ny, s->z,        1,0, n_col),
+            NULL, &vp);
+        /* Chevron tip */
+        sr_draw_triangle(fb_ptr,
+            sr_vert_c(s->x,        ny, s->z + nlen + 0.6f, 0.5f, 0, n_col),
+            sr_vert_c(s->x - 0.3f, ny, s->z + nlen,       0,    1, n_col),
+            sr_vert_c(s->x + 0.3f, ny, s->z + nlen,       1,    1, n_col),
+            NULL, &vp);
+    }
 
     /* Draw NPC ships (all Klingon Bird of Prey) */
     for (int i = 0; i < sfa.npc_count; i++)
