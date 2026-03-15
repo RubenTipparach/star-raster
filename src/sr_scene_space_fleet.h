@@ -1796,6 +1796,29 @@ static void sfa_draw_mobile_controls(uint32_t *px, int W, int H, sfa_ship *s) {
     sr_draw_text_shadow(px, W, H, bx + 2, by_base - 10,
                          "SPEED", SFA_HUD_TEXT, SFA_HUD_SHADOW);
 
+    /* Speed name + bar to the left of throttle buttons (fixed position) */
+    {
+        int sx = bx - 68;
+        int sy = by_base - 22;
+        sr_draw_text_shadow(px, W, H, sx, sy, sfa_speed_names[s->speed_level],
+                             SFA_HUD_ACCENT, SFA_HUD_SHADOW);
+
+        /* Speed bar below label */
+        int sbar_w = 62, sbar_h = 4;
+        int sby = sy + 9;
+        float max_spd = sfa_speed_values[SFA_NUM_SPEEDS - 1];
+        sfa_draw_rect(px, W, H, sx, sby, sx + sbar_w, sby + sbar_h, SFA_HUD_BG);
+        float target_spd = sfa_speed_values[s->speed_level];
+        int tw = (max_spd > 0) ? (int)(sbar_w * target_spd / max_spd) : 0;
+        if (tw > 0)
+            sfa_draw_rect(px, W, H, sx, sby, sx + tw, sby + sbar_h, 0x60335577);
+        int fw = (max_spd > 0) ? (int)(sbar_w * s->current_speed / max_spd) : 0;
+        if (fw > 0) {
+            uint32_t fc = s->speed_level == SFA_SPEED_FULL ? SFA_HUD_WARN : SFA_HUD_ACCENT;
+            sfa_draw_rect(px, W, H, sx, sby, sx + fw, sby + sbar_h, fc);
+        }
+    }
+
     for (int i = SFA_NUM_SPEEDS - 1; i >= 0; i--) {
         int idx = SFA_NUM_SPEEDS - 1 - i;  /* draw highest at top */
         int by = by_base + idx * (SFA_VCTRL_BTN_H + SFA_VCTRL_BTN_GAP);
@@ -1816,12 +1839,13 @@ static void sfa_draw_mobile_controls(uint32_t *px, int W, int H, sfa_ship *s) {
 
 /* ── HUD: Weapon bars (bottom-center, combined button + cooldown) ── */
 
-static void sfa_draw_weapon_bars(uint32_t *px, int W, int H, sfa_ship *s) {
-    int bar_h = 20;
-    int gap = 4;
-    int pad = 4; /* horizontal padding inside bar */
+/* Fixed weapon bar dimensions — must match between draw and click handling */
+#define SFA_WBAR_W   76
+#define SFA_WBAR_H   20
+#define SFA_WBAR_GAP 4
+#define SFA_WBAR_PAD 4
 
-    /* Build labels first so we can measure them */
+static void sfa_draw_weapon_bars(uint32_t *px, int W, int H, sfa_ship *s) {
     char ph_label[20], tp_label[20];
 
     float ph_pct = 1.0f - (s->phaser_cooldown / SFA_PHASER_COOLDOWN);
@@ -1846,32 +1870,29 @@ static void sfa_draw_weapon_bars(uint32_t *px, int W, int H, sfa_ship *s) {
     else
         snprintf(tp_label, sizeof(tp_label), "TORP x%d %.1f", s->torpedoes_remaining, s->torpedo_cooldown);
 
-    /* Size bars to fit their text */
-    int ph_w = (int)strlen(ph_label) * 6 + pad * 2;
-    int tp_w = (int)strlen(tp_label) * 6 + pad * 2;
-    int total_w = ph_w + gap + tp_w;
+    int total_w = SFA_WBAR_W * 2 + SFA_WBAR_GAP;
     int x0 = (W - total_w) / 2;
-    int y = H - bar_h - 4;
+    int y = H - SFA_WBAR_H - 4;
 
     /* ── Phaser bar ── */
     {
         int x = x0;
-        int fill = (int)(ph_w * ph_pct);
-        sfa_draw_rect(px, W, H, x, y, x + ph_w, y + bar_h, SFA_HUD_BG);
+        int fill = (int)(SFA_WBAR_W * ph_pct);
+        sfa_draw_rect(px, W, H, x, y, x + SFA_WBAR_W, y + SFA_WBAR_H, SFA_HUD_BG);
         uint32_t fill_col = ph_rdy ? 0xFF44FF44 : 0xFF44AACC;
-        if (fill > 0) sfa_draw_rect(px, W, H, x, y, x + fill, y + bar_h, fill_col);
-        sr_draw_text_shadow(px, W, H, x + pad, y + 6, ph_label,
+        if (fill > 0) sfa_draw_rect(px, W, H, x, y, x + fill, y + SFA_WBAR_H, fill_col);
+        sr_draw_text_shadow(px, W, H, x + SFA_WBAR_PAD, y + 6, ph_label,
                              ph_rdy ? 0xFFFFFFFF : 0xFFCCCCCC, SFA_HUD_SHADOW);
     }
 
     /* ── Torpedo bar ── */
     {
-        int x = x0 + ph_w + gap;
-        int fill = (int)(tp_w * tp_pct);
-        sfa_draw_rect(px, W, H, x, y, x + tp_w, y + bar_h, SFA_HUD_BG);
+        int x = x0 + SFA_WBAR_W + SFA_WBAR_GAP;
+        int fill = (int)(SFA_WBAR_W * tp_pct);
+        sfa_draw_rect(px, W, H, x, y, x + SFA_WBAR_W, y + SFA_WBAR_H, SFA_HUD_BG);
         uint32_t fill_col = tp_rdy ? 0xFF4466FF : 0xFF44AACC;
-        if (fill > 0) sfa_draw_rect(px, W, H, x, y, x + fill, y + bar_h, fill_col);
-        sr_draw_text_shadow(px, W, H, x + pad, y + 6, tp_label,
+        if (fill > 0) sfa_draw_rect(px, W, H, x, y, x + fill, y + SFA_WBAR_H, fill_col);
+        sr_draw_text_shadow(px, W, H, x + SFA_WBAR_PAD, y + 6, tp_label,
                              tp_rdy ? 0xFFFFFFFF : 0xFFCCCCCC, SFA_HUD_SHADOW);
     }
 
@@ -1919,10 +1940,7 @@ static void sfa_draw_hud(sr_framebuffer *fb_ptr, sfa_ship *s) {
     /* Heading */
     sfa_draw_heading_hud(px, W, H, s, W / 2, 3);
 
-    /* Speed indicator (top-left) */
-    sfa_draw_speed_hud(px, W, H, s, 3, 3);
-
-    /* Player health bar (top-right, left of MENU button) */
+    /* Player health bar (top-left) */
     {
         float total_hp = s->hull;
         for (int i = 0; i < 6; i++) total_hp += s->shields[i];
@@ -1931,8 +1949,7 @@ static void sfa_draw_hud(sr_framebuffer *fb_ptr, sfa_ship *s) {
         if (hp_pct > 1) hp_pct = 1;
 
         int bar_w = 80, bar_h = 7;
-        int bx = W - bar_w - 36;
-        int by = 3;
+        int bx = 3, by = 3;
 
         sfa_draw_rect(px, W, H, bx, by, bx + bar_w, by + bar_h, 0xC0000000);
         int fill = (int)(bar_w * hp_pct);
@@ -2063,31 +2080,14 @@ static bool sfa_handle_touch_began(float sx, float sy) {
         }
     }
 
-    /* Check weapon fire bars first (bottom-center, dynamic sizing) */
+    /* Check weapon fire bars (bottom-center, fixed size) */
     {
-        int bar_h = 20, gap = 4, pad = 4;
-        char ph_l[20];
-        if (sfa.player.phaser_cooldown <= 0)
-            snprintf(ph_l, sizeof(ph_l), "PHSR [SPC]");
-        else
-            snprintf(ph_l, sizeof(ph_l), "PHSR %.1f", sfa.player.phaser_cooldown);
-        int ph_w = (int)strlen(ph_l) * 6 + pad * 2;
-
-        char tp_l[20];
-        if (sfa.player.torpedoes_remaining <= 0)
-            snprintf(tp_l, sizeof(tp_l), "TORP EMPTY");
-        else if (sfa.player.torpedo_cooldown <= 0)
-            snprintf(tp_l, sizeof(tp_l), "TORP [F] x%d", sfa.player.torpedoes_remaining);
-        else
-            snprintf(tp_l, sizeof(tp_l), "TORP x%d %.1f", sfa.player.torpedoes_remaining, sfa.player.torpedo_cooldown);
-        int tp_w = (int)strlen(tp_l) * 6 + pad * 2;
-
-        int total_w = ph_w + gap + tp_w;
+        int total_w = SFA_WBAR_W * 2 + SFA_WBAR_GAP;
         int wx0 = (FB_WIDTH - total_w) / 2;
-        int wy = FB_HEIGHT - bar_h - 4;
+        int wy = FB_HEIGHT - SFA_WBAR_H - 4;
 
         /* PHASER bar */
-        if (fx >= wx0 && fx <= wx0 + ph_w && fy >= wy && fy <= wy + bar_h) {
+        if (fx >= wx0 && fx <= wx0 + SFA_WBAR_W && fy >= wy && fy <= wy + SFA_WBAR_H) {
             if (sfa.selected_npc >= 0 && sfa.selected_npc < sfa.npc_count) {
                 sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
                 if (tgt->alive) sfa_fire_phaser(&sfa.player, tgt, -1, sfa.selected_npc);
@@ -2095,8 +2095,8 @@ static bool sfa_handle_touch_began(float sx, float sy) {
             return true;
         }
         /* TORP bar */
-        int tx = wx0 + ph_w + gap;
-        if (fx >= tx && fx <= tx + tp_w && fy >= wy && fy <= wy + bar_h) {
+        int tx = wx0 + SFA_WBAR_W + SFA_WBAR_GAP;
+        if (fx >= tx && fx <= tx + SFA_WBAR_W && fy >= wy && fy <= wy + SFA_WBAR_H) {
             if (sfa.selected_npc >= 0 && sfa.selected_npc < sfa.npc_count) {
                 sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
                 if (tgt->alive)
@@ -2221,12 +2221,9 @@ static bool sfa_handle_mouse_click(float sx, float sy) {
     if (sfa.last_fb_w > 0)
         sfa_update_hover(&sfa.last_vp, sfa.last_fb_w, sfa.last_fb_h);
 
-    /* If hovering an NPC, select/deselect it */
+    /* If hovering an NPC, select it (use CLR TGT button to deselect) */
     if (sfa.hovered_npc >= 0) {
-        if (sfa.selected_npc == sfa.hovered_npc)
-            sfa.selected_npc = -1;  /* deselect */
-        else
-            sfa.selected_npc = sfa.hovered_npc;
+        sfa.selected_npc = sfa.hovered_npc;
         return true;  /* consumed — don't pass to steering */
     }
 
@@ -2667,6 +2664,39 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
             sr_vert_c(s->x - 0.3f, ny, s->z + nlen,       0,    1, n_col),
             sr_vert_c(s->x + 0.3f, ny, s->z + nlen,       1,    1, n_col),
             NULL, &vp);
+    }
+
+    /* 3D Target direction arrow — points from ship toward selected target */
+    if (sfa.selected_npc >= 0 && sfa.selected_npc < sfa.npc_count &&
+        sfa.npcs[sfa.selected_npc].alive) {
+        sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
+        float dx = tgt->x - s->x;
+        float dz = tgt->z - s->z;
+        float dist = sqrtf(dx * dx + dz * dz);
+        if (dist > 0.1f) {
+            float ux = dx / dist, uz = dz / dist;  /* unit direction */
+            float ty = 0.5f;
+            float tlen = 4.0f;
+            float tw = 0.03f;
+            uint32_t t_col = 0xFFFF6464; /* selected target color */
+
+            /* Perpendicular for line width */
+            float px2 = -uz * tw, pz = ux * tw;
+
+            /* Shaft: thin quad from ship toward target */
+            sr_draw_quad(fb_ptr,
+                sr_vert_c(s->x + px2,            ty, s->z + pz,            0,0, t_col),
+                sr_vert_c(s->x + ux*tlen + px2,  ty, s->z + uz*tlen + pz,  0,1, t_col),
+                sr_vert_c(s->x + ux*tlen - px2,  ty, s->z + uz*tlen - pz,  1,1, t_col),
+                sr_vert_c(s->x - px2,            ty, s->z - pz,            1,0, t_col),
+                NULL, &vp);
+            /* Chevron tip */
+            sr_draw_triangle(fb_ptr,
+                sr_vert_c(s->x + ux*(tlen+0.6f),       ty, s->z + uz*(tlen+0.6f),       0.5f, 0, t_col),
+                sr_vert_c(s->x + ux*tlen - uz*0.3f,    ty, s->z + uz*tlen + ux*0.3f,    0,    1, t_col),
+                sr_vert_c(s->x + ux*tlen + uz*0.3f,    ty, s->z + uz*tlen - ux*0.3f,    1,    1, t_col),
+                NULL, &vp);
+        }
     }
 
     /* Draw NPC ships (skip dead) */
