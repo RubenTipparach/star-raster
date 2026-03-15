@@ -34,6 +34,10 @@ static const char *sfa_speed_names[SFA_NUM_SPEEDS] = {
 #define SFA_TURN_RATE    2.0f
 #define SFA_STEER_DISC_R 4.0f    /* world-space steering disc radius */
 
+/* Sensor ranges */
+#define SFA_SENSOR_SHORT  60.0f     /* short range sensor radius */
+#define SFA_SENSOR_LONG   160.0f    /* long range sensor radius */
+
 /* Camera — pitched angle, behind and above the ship */
 #define SFA_CAM_HEIGHT   18.0f       /* height above ship */
 #define SFA_CAM_BACK     22.0f       /* distance behind ship */
@@ -207,6 +211,9 @@ typedef struct {
     float    touch_steer_cy;
     float    touch_steer_angle;   /* current angle from touch */
     bool     touch_throttle;      /* throttle touch active */
+
+    /* Sensors */
+    bool     long_range_sensors;  /* false = short range (60), true = long range (160) */
 
     /* Combat effects */
     sfa_beam       beams[SFA_MAX_BEAMS];
@@ -1742,7 +1749,7 @@ static void sfa_draw_mobile_controls(uint32_t *px, int W, int H, sfa_ship *s) {
 
     /* Enemy dots on minimap — plot world XZ relative to player (no rotation, dial is fixed) */
     {
-        float max_range = 60.0f;
+        float max_range = sfa.long_range_sensors ? SFA_SENSOR_LONG : SFA_SENSOR_SHORT;
         float map_r = (float)(sr_radius - 4); /* usable pixel radius */
         for (int i = 0; i < sfa.npc_count; i++) {
             sfa_ship *npc = &sfa.npcs[i];
@@ -1951,12 +1958,30 @@ static void sfa_draw_hud(sr_framebuffer *fb_ptr, sfa_ship *s) {
     /* Weapon bars (bottom-center) */
     sfa_draw_weapon_bars(px, W, H, s);
 
-    /* MENU button (top-right) */
+    /* Top-right buttons: [SRS/LRS] [CLR TGT] [MENU] */
     {
-        int mbx = W - 32, mby = 3, mbw = 30, mbh = 11;
-        sfa_draw_rect(px, W, H, mbx, mby, mbx + mbw, mby + mbh, SFA_HUD_BG);
-        sr_draw_text_shadow(px, W, H, mbx + 3, mby + 2, "MENU",
+        int mby = 3, mbh = 11;
+
+        /* MENU button (rightmost) */
+        int menu_x = W - 32;
+        sfa_draw_rect(px, W, H, menu_x, mby, menu_x + 30, mby + mbh, SFA_HUD_BG);
+        sr_draw_text_shadow(px, W, H, menu_x + 3, mby + 2, "MENU",
                              0xFF999999, SFA_HUD_SHADOW);
+
+        /* CLR TGT button */
+        int clr_x = menu_x - 50;
+        uint32_t clr_col = (sfa.selected_npc >= 0) ? SFA_HUD_ACCENT : 0xFF555555;
+        sfa_draw_rect(px, W, H, clr_x, mby, clr_x + 48, mby + mbh, SFA_HUD_BG);
+        sr_draw_text_shadow(px, W, H, clr_x + 3, mby + 2, "CLR TGT",
+                             clr_col, SFA_HUD_SHADOW);
+
+        /* SRS/LRS button */
+        int sns_x = clr_x - 32;
+        const char *sns_label = sfa.long_range_sensors ? "LRS" : "SRS";
+        uint32_t sns_col = sfa.long_range_sensors ? 0xFF44CC44 : SFA_HUD_ACCENT;
+        sfa_draw_rect(px, W, H, sns_x, mby, sns_x + 30, mby + mbh, SFA_HUD_BG);
+        sr_draw_text_shadow(px, W, H, sns_x + 3, mby + 2, sns_label,
+                             sns_col, SFA_HUD_SHADOW);
     }
 }
 
@@ -1980,11 +2005,30 @@ static bool sfa_handle_touch_began(float sx, float sy) {
         return true;  /* absorb clicks during victory countdown */
     }
 
-    /* Check MENU button */
-    int mbx = FB_WIDTH - 32, mby = 3, mbw = 30, mbh = 11;
-    if (fx >= mbx && fx <= mbx + mbw && fy >= mby && fy <= mby + mbh) {
-        app_state = STATE_MENU;
-        return true;
+    /* Check top-right buttons */
+    {
+        int mby = 3, mbh = 11;
+
+        /* MENU button */
+        int menu_x = FB_WIDTH - 32;
+        if (fx >= menu_x && fx <= menu_x + 30 && fy >= mby && fy <= mby + mbh) {
+            app_state = STATE_MENU;
+            return true;
+        }
+
+        /* CLR TGT button */
+        int clr_x = menu_x - 50;
+        if (fx >= clr_x && fx <= clr_x + 48 && fy >= mby && fy <= mby + mbh) {
+            sfa.selected_npc = -1;
+            return true;
+        }
+
+        /* SRS/LRS toggle button */
+        int sns_x = clr_x - 32;
+        if (fx >= sns_x && fx <= sns_x + 30 && fy >= mby && fy <= mby + mbh) {
+            sfa.long_range_sensors = !sfa.long_range_sensors;
+            return true;
+        }
     }
 
     /* Check minimap click — select target by clicking its dot */
@@ -1994,7 +2038,7 @@ static bool sfa_handle_touch_began(float sx, float sy) {
         int sr = SFA_VCTRL_STEER_R;
         float mdx = fx - scx, mdy = fy - scy;
         if (mdx * mdx + mdy * mdy < (float)(sr * sr)) {
-            float max_range = 60.0f;
+            float max_range = sfa.long_range_sensors ? SFA_SENSOR_LONG : SFA_SENSOR_SHORT;
             float map_r = (float)(sr - 4);
             int best = -1;
             float best_d = 10.0f; /* pixel threshold */
@@ -2013,7 +2057,7 @@ static bool sfa_handle_touch_began(float sx, float sy) {
                 if (pd < best_d) { best_d = pd; best = i; }
             }
             if (best >= 0) {
-                sfa.selected_npc = (sfa.selected_npc == best) ? -1 : best;
+                sfa.selected_npc = best;
                 return true;
             }
         }
