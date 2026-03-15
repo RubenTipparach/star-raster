@@ -35,8 +35,8 @@ static const char *sfa_speed_names[SFA_NUM_SPEEDS] = {
 #define SFA_STEER_DISC_R 4.0f    /* world-space steering disc radius */
 
 /* Sensor ranges */
-#define SFA_SENSOR_SHORT  60.0f     /* short range sensor radius */
-#define SFA_SENSOR_LONG   160.0f    /* long range sensor radius */
+#define SFA_SENSOR_SHORT  20.0f     /* short range sensor radius */
+#define SFA_SENSOR_LONG   60.0f    /* long range sensor radius */
 
 /* Camera — pitched angle, behind and above the ship */
 #define SFA_CAM_HEIGHT   18.0f       /* height above ship */
@@ -1791,36 +1791,11 @@ static void sfa_draw_mobile_controls(uint32_t *px, int W, int H, sfa_ship *s) {
 
     /* ── Right side: throttle buttons ── */
     int bx = SFA_VCTRL_BTN_X;
-    int by_base = H - 10 - (SFA_NUM_SPEEDS * (SFA_VCTRL_BTN_H + SFA_VCTRL_BTN_GAP));
-
-    sr_draw_text_shadow(px, W, H, bx + 2, by_base - 10,
-                         "SPEED", SFA_HUD_TEXT, SFA_HUD_SHADOW);
-
-    /* Speed name + bar to the left of throttle buttons (fixed position) */
-    {
-        int sx = bx - 68;
-        int sy = by_base - 22;
-        sr_draw_text_shadow(px, W, H, sx, sy, sfa_speed_names[s->speed_level],
-                             SFA_HUD_ACCENT, SFA_HUD_SHADOW);
-
-        /* Speed bar below label */
-        int sbar_w = 62, sbar_h = 4;
-        int sby = sy + 9;
-        float max_spd = sfa_speed_values[SFA_NUM_SPEEDS - 1];
-        sfa_draw_rect(px, W, H, sx, sby, sx + sbar_w, sby + sbar_h, SFA_HUD_BG);
-        float target_spd = sfa_speed_values[s->speed_level];
-        int tw = (max_spd > 0) ? (int)(sbar_w * target_spd / max_spd) : 0;
-        if (tw > 0)
-            sfa_draw_rect(px, W, H, sx, sby, sx + tw, sby + sbar_h, 0x60335577);
-        int fw = (max_spd > 0) ? (int)(sbar_w * s->current_speed / max_spd) : 0;
-        if (fw > 0) {
-            uint32_t fc = s->speed_level == SFA_SPEED_FULL ? SFA_HUD_WARN : SFA_HUD_ACCENT;
-            sfa_draw_rect(px, W, H, sx, sby, sx + fw, sby + sbar_h, fc);
-        }
-    }
+    int btn_stack_h = SFA_NUM_SPEEDS * (SFA_VCTRL_BTN_H + SFA_VCTRL_BTN_GAP);
+    int by_base = H - 26 - btn_stack_h;
 
     for (int i = SFA_NUM_SPEEDS - 1; i >= 0; i--) {
-        int idx = SFA_NUM_SPEEDS - 1 - i;  /* draw highest at top */
+        int idx = SFA_NUM_SPEEDS - 1 - i;
         int by = by_base + idx * (SFA_VCTRL_BTN_H + SFA_VCTRL_BTN_GAP);
 
         uint32_t bg = (i == s->speed_level) ? 0xC0332200 : SFA_HUD_BG;
@@ -1833,6 +1808,28 @@ static void sfa_draw_mobile_controls(uint32_t *px, int W, int H, sfa_ship *s) {
         else if (i == SFA_NUM_SPEEDS - 1) snprintf(label, sizeof(label), "FULL");
         else snprintf(label, sizeof(label), "%d/4", i);
         sr_draw_text_shadow(px, W, H, bx + 4, by + 5, label, fg, SFA_HUD_SHADOW);
+    }
+
+    /* Speed name + bar below buttons */
+    {
+        int sx = bx - 40;  /* shifted left for longer text */
+        int sbar_w = SFA_VCTRL_BTN_W + 40;
+        int sy = by_base + btn_stack_h + 2;
+        sr_draw_text_shadow(px, W, H, sx, sy, sfa_speed_names[s->speed_level],
+                             SFA_HUD_ACCENT, SFA_HUD_SHADOW);
+        int sbar_h = 4;
+        int sby = sy + 9;
+        float max_spd = sfa_speed_values[SFA_NUM_SPEEDS - 1];
+        sfa_draw_rect(px, W, H, sx, sby, sx + sbar_w, sby + sbar_h, SFA_HUD_BG);
+        float target_spd = sfa_speed_values[s->speed_level];
+        int tw = (max_spd > 0) ? (int)(sbar_w * target_spd / max_spd) : 0;
+        if (tw > 0)
+            sfa_draw_rect(px, W, H, sx, sby, sx + tw, sby + sbar_h, 0x60335577);
+        int fw = (max_spd > 0) ? (int)(sbar_w * s->current_speed / max_spd) : 0;
+        if (fw > 0) {
+            uint32_t fc = s->speed_level == SFA_SPEED_FULL ? SFA_HUD_WARN : SFA_HUD_ACCENT;
+            sfa_draw_rect(px, W, H, sx, sby, sx + fw, sby + sbar_h, fc);
+        }
     }
 
 }
@@ -2108,7 +2105,7 @@ static bool sfa_handle_touch_began(float sx, float sy) {
 
     /* Check throttle buttons */
     int bx = SFA_VCTRL_BTN_X;
-    int by_base = FB_HEIGHT - 10 - (SFA_NUM_SPEEDS * (SFA_VCTRL_BTN_H + SFA_VCTRL_BTN_GAP));
+    int by_base = FB_HEIGHT - 26 - (SFA_NUM_SPEEDS * (SFA_VCTRL_BTN_H + SFA_VCTRL_BTN_GAP));
     for (int i = SFA_NUM_SPEEDS - 1; i >= 0; i--) {
         int idx = SFA_NUM_SPEEDS - 1 - i;
         int by = by_base + idx * (SFA_VCTRL_BTN_H + SFA_VCTRL_BTN_GAP);
