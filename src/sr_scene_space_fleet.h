@@ -158,12 +158,35 @@ typedef struct {
     bool active;
 } sfa_explosion;
 
+/* Game phases */
+enum {
+    SFA_PHASE_BRIEFING,     /* pre-mission briefing screen */
+    SFA_PHASE_COMBAT,       /* active gameplay */
+    SFA_PHASE_VICTORY,      /* "MISSION COMPLETE" overlay, 5-second timer */
+    SFA_PHASE_STATS,        /* post-mission stats summary */
+};
+
+/* Mission stats (tracked during combat) */
+typedef struct {
+    int   phasers_fired;
+    int   torpedoes_fired;
+    int   enemies_destroyed;
+    float damage_dealt;
+    float damage_taken;
+    float combat_time;       /* seconds in combat phase */
+} sfa_mission_stats;
+
 typedef struct {
     sfa_ship player;
     sfa_ship npcs[SFA_MAX_NPC];
     int      npc_count;
     float    time;
     bool     initialized;
+
+    /* Game phase */
+    int      phase;
+    float    phase_timer;        /* countdown for phase transitions */
+    sfa_mission_stats stats;
 
     /* Targeting */
     int      hovered_npc;         /* NPC index under cursor, -1 = none */
@@ -239,6 +262,10 @@ static void sfa_init(void) {
     sfa.hovered_npc = -1;
     sfa.selected_npc = -1;
     sfa.cam_target_yaw = 0.0f;
+
+    sfa.phase = SFA_PHASE_BRIEFING;
+    sfa.phase_timer = 0;
+    memset(&sfa.stats, 0, sizeof(sfa.stats));
 
     sfa.initialized = true;
 }
@@ -352,7 +379,18 @@ static void sfa_fire_phaser(sfa_ship *firer, sfa_ship *target,
     firer->phaser_cooldown = SFA_PHASER_COOLDOWN;
 
     int shield_idx = sfa_shield_facing(target, firer->x, firer->z);
+    float pre_hull = target->hull;
     sfa_apply_damage(target, SFA_PHASER_DAMAGE, shield_idx);
+
+    /* Track stats for player */
+    if (source_idx == -1) {
+        sfa.stats.phasers_fired++;
+        sfa.stats.damage_dealt += SFA_PHASER_DAMAGE;
+        if (!target->alive && pre_hull > 0)
+            sfa.stats.enemies_destroyed++;
+    } else {
+        sfa.stats.damage_taken += SFA_PHASER_DAMAGE;
+    }
 
     sfa_spawn_beam(firer->x, firer->z, target->x, target->z,
                     0xFF4488FF, source_idx, target_idx);
@@ -370,6 +408,9 @@ static void sfa_fire_torpedo(sfa_ship *firer, sfa_ship *target,
     firer->torpedo_cooldown = SFA_TORP_COOLDOWN;
     firer->torpedoes_remaining--;
 
+    /* Track stats for player */
+    if (owner_idx == -1) sfa.stats.torpedoes_fired++;
+
     sfa_spawn_torpedo_proj(firer, owner_idx, target_idx,
                            target->x, target->z, 0xFF3366FF); /* reddish glow */
 }
@@ -378,7 +419,6 @@ static void sfa_fire_torpedo(sfa_ship *firer, sfa_ship *target,
 
 static void sfa_update(float dt) {
     sfa_ship *s = &sfa.player;
-    sfa.time += dt;
 
     /* Apply continuous keyboard steering (positive heading = screen-right) */
     if (sfa_key_left)  s->target_heading -= SFA_TURN_RATE * dt;
@@ -486,6 +526,7 @@ static void sfa_update(float dt) {
                 sfa_in_weapon_arc(npc, sfa.player.x, sfa.player.z, SFA_PHASER_ARC)) {
                 int si = sfa_shield_facing(&sfa.player, npc->x, npc->z);
                 sfa_apply_damage(&sfa.player, SFA_PHASER_DAMAGE * 0.7f, si);
+                sfa.stats.damage_taken += SFA_PHASER_DAMAGE * 0.7f;
                 npc->phaser_cooldown = SFA_PHASER_COOLDOWN * 1.2f;
                 sfa_spawn_beam(npc->x, npc->z, sfa.player.x, sfa.player.z, 0xFF22CC22, i, -1);
                 sfa_spawn_explosion(sfa.player.x, sfa.player.z, 0.3f, 0xFF44FF44);
@@ -572,9 +613,19 @@ static void sfa_update(float dt) {
         float tdz = tp->z - victim->z;
         if (tdx * tdx + tdz * tdz < SFA_TORP_HIT_RADIUS * SFA_TORP_HIT_RADIUS) {
             int si = sfa_shield_facing(victim, tp->x, tp->z);
+            float pre_hull = victim->hull;
             sfa_apply_damage(victim, SFA_TORP_DAMAGE, si);
             sfa_spawn_explosion(tp->x, tp->z, 0.6f, 0xFF2244FF);
             tp->active = false;
+
+            /* Track stats */
+            if (tp->owner == -1) {
+                sfa.stats.damage_dealt += SFA_TORP_DAMAGE;
+                if (!victim->alive && pre_hull > 0)
+                    sfa.stats.enemies_destroyed++;
+            } else {
+                sfa.stats.damage_taken += SFA_TORP_DAMAGE;
+            }
         }
     }
 
@@ -583,6 +634,27 @@ static void sfa_update(float dt) {
         if (sfa.explosions[i].active) {
             sfa.explosions[i].timer -= dt;
             if (sfa.explosions[i].timer <= 0) sfa.explosions[i].active = false;
+        }
+    }
+
+    /* Track combat time (only during active combat) */
+    if (sfa.phase == SFA_PHASE_COMBAT)
+        sfa.stats.combat_time += dt;
+
+    /* Victory detection — all NPCs destroyed */
+    if (sfa.phase == SFA_PHASE_COMBAT) {
+        bool all_dead = true;
+        for (int i = 0; i < sfa.npc_count; i++) {
+            if (sfa.npcs[i].alive) { all_dead = false; break; }
+        }
+        if (all_dead) {
+            sfa.phase = SFA_PHASE_VICTORY;
+            sfa.phase_timer = 5.0f;
+        }
+    } else if (sfa.phase == SFA_PHASE_VICTORY) {
+        sfa.phase_timer -= dt;
+        if (sfa.phase_timer <= 0) {
+            sfa.phase = SFA_PHASE_STATS;
         }
     }
 
@@ -874,9 +946,13 @@ static void sfa_draw_starfield(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
     float z_start = floorf((cam_z - view_range) / spacing) * spacing;
     float y_start = floorf((y_center - y_range) / spacing) * spacing;
 
-    /* Palette base indices for star tints */
-    static const int star_tints[4] = { 8, 47, 18, 12 };
-    /* white(C7DCD0), blue(4D9BE6), yellow(F9C22B), red(EA4F36) */
+    /* Star base colors (ABGR): 3 white, 1 blue */
+    static const uint32_t star_colors[4] = {
+        0xFFFFFFFF,  /* pure white */
+        0xFFFFFFFF,  /* pure white */
+        0xFFFFFFFF,  /* pure white */
+        0xFFFFCC88,  /* light blue (ABGR: R=0x88, G=0xCC, B=0xFF) */
+    };
 
     for (float gx = x_start; gx < cam_x + view_range; gx += spacing) {
         for (float gz = z_start; gz < cam_z + view_range; gz += spacing) {
@@ -890,8 +966,7 @@ static void sfa_draw_starfield(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
                 if ((seed & 3) == 0) continue;
 
                 /* 1 star per cell */
-                int n_stars = 1;
-                for (int si = 0; si < n_stars; si++) {
+                for (int si = 0; si < 1; si++) {
                     seed = seed * 1103515245u + 12345u + (uint32_t)si * 7u;
                     float ox = (float)((seed >> 4) & 0xFF) / 255.0f * spacing;
                     seed = seed * 1103515245u + 12345u;
@@ -916,7 +991,7 @@ static void sfa_draw_starfield(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
 
                     /* Project to screen */
                     sr_vec4 clip = sr_mat4_mul_v4(*vp, sr_v4(star_x, star_y, star_z, 1.0f));
-                    if (clip.w < 0.1f) continue; /* behind camera */
+                    if (clip.w < 0.1f) continue;
                     float inv_w = 1.0f / clip.w;
                     float ndc_x = clip.x * inv_w;
                     float ndc_y = clip.y * inv_w;
@@ -926,24 +1001,22 @@ static void sfa_draw_starfield(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
 
                     if (sx < 0 || sx >= W || sy < 0 || sy >= H) continue;
 
-                    /* Tint and shade */
+                    /* Pick tint and scale by brightness */
                     seed = seed * 1103515245u + 12345u;
-                    int tint = (seed >> 8) % 4;
-                    int base_col = star_tints[tint];
-                    /* Map brightness [0,1] → shade [2, PAL_MID_ROW+2] */
-                    int shade = 2 + (int)(brightness * (float)(PAL_MID_ROW));
-                    uint32_t col = sfa_pal_shade(base_col, shade);
+                    uint32_t base = star_colors[(seed >> 8) % 4];
+                    uint8_t br = (uint8_t)(((base      ) & 0xFF) * brightness);
+                    uint8_t bg = (uint8_t)(((base >>  8) & 0xFF) * brightness);
+                    uint8_t bb = (uint8_t)(((base >> 16) & 0xFF) * brightness);
+                    uint32_t col = 0xFF000000 | ((uint32_t)bb << 16) | ((uint32_t)bg << 8) | br;
 
                     /* Close stars (< 40% range) = 2x2, far = 1x1 */
                     float dist_norm = dist2 / (view_range * view_range);
                     if (dist_norm < 0.16f && brightness > 0.25f) {
-                        /* 2x2 pixel star */
                         px[sy * W + sx] = col;
                         if (sx + 1 < W) px[sy * W + sx + 1] = col;
                         if (sy + 1 < H) px[(sy + 1) * W + sx] = col;
                         if (sx + 1 < W && sy + 1 < H) px[(sy + 1) * W + sx + 1] = col;
                     } else {
-                        /* 1x1 pixel star */
                         px[sy * W + sx] = col;
                     }
                 }
@@ -1667,40 +1740,24 @@ static void sfa_draw_mobile_controls(uint32_t *px, int W, int H, sfa_ship *s) {
         }
     }
 
-    /* Enemy dots on minimap — plot world XZ relative to player, rotated by camera yaw */
+    /* Enemy dots on minimap — plot world XZ relative to player (no rotation, dial is fixed) */
     {
         float max_range = 60.0f;
         float map_r = (float)(sr_radius - 4); /* usable pixel radius */
-        float cyaw = sfa.cam_target_yaw;
-        float rc = cosf(cyaw), rs = sinf(cyaw);
         for (int i = 0; i < sfa.npc_count; i++) {
             sfa_ship *npc = &sfa.npcs[i];
             if (!npc->alive) continue;
             float dx = npc->x - sfa.player.x;
             float dz = npc->z - sfa.player.z;
+            float dist = sqrtf(dx * dx + dz * dz);
 
-            /* Rotate by -cam_yaw so "up on minimap = forward on screen" */
-            float rx =  dx * rc + dz * rs;
-            float rz = -dx * rs + dz * rc;
+            /* Unit direction * scaled distance, clamped to minimap radius */
+            float r = (dist < 0.01f) ? 0.0f : fminf(dist / max_range, 1.0f) * map_r;
+            float ux = (dist < 0.01f) ? 0.0f : dx / dist;
+            float uz = (dist < 0.01f) ? 0.0f : dz / dist;
 
-            float dist = sqrtf(rx * rx + rz * rz);
-
-            /* Normalize and clamp to map radius */
-            float mx, my;
-            if (dist < 0.01f) {
-                mx = 0; my = 0;
-            } else if (dist > max_range) {
-                mx = (rx / dist) * map_r;
-                my = (rz / dist) * map_r;
-            } else {
-                float scale = map_r / max_range;
-                mx = rx * scale;
-                my = rz * scale;
-            }
-
-            /* X → screen right, Z → screen up */
-            int ex = scx + (int)mx;
-            int ey = scy - (int)my;
+            int ex = scx - (int)(ux * r);  /* minimap right = world -X (heading 90) */
+            int ey = scy - (int)(uz * r);
 
             uint32_t dot_col = (i == sfa.selected_npc)
                 ? 0xFFFF6464 : 0xFF4444CC;
@@ -1858,13 +1915,31 @@ static void sfa_draw_hud(sr_framebuffer *fb_ptr, sfa_ship *s) {
     /* Speed indicator (top-left) */
     sfa_draw_speed_hud(px, W, H, s, 3, 3);
 
-    /* Hull indicator (top-right, left of MENU button) */
+    /* Player health bar (top-right, left of MENU button) */
     {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "HULL: %d%%", (int)s->hull);
-        int tw = (int)strlen(buf) * 6;
-        sr_draw_text_shadow(px, W, H, W - tw - 36, 3, buf,
-                             s->hull > 50 ? SFA_HUD_BRIGHT : SFA_HUD_WARN, SFA_HUD_SHADOW);
+        float total_hp = s->hull;
+        for (int i = 0; i < 6; i++) total_hp += s->shields[i];
+        float hp_pct = total_hp / 700.0f;
+        if (hp_pct < 0) hp_pct = 0;
+        if (hp_pct > 1) hp_pct = 1;
+
+        int bar_w = 80, bar_h = 7;
+        int bx = W - bar_w - 36;
+        int by = 3;
+
+        sfa_draw_rect(px, W, H, bx, by, bx + bar_w, by + bar_h, 0xC0000000);
+        int fill = (int)(bar_w * hp_pct);
+        uint32_t hp_col = hp_pct > 0.6f ? 0xFF44CC44
+                        : hp_pct > 0.3f ? 0xFF44CCCC
+                        :                  0xFF4444CC;
+        if (fill > 0)
+            sfa_draw_rect(px, W, H, bx, by, bx + fill, by + bar_h, hp_col);
+
+        /* Hull percentage label inside bar */
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d%%", (int)(hp_pct * 100));
+        sr_draw_text_shadow(px, W, H, bx + 2, by - 1, buf,
+                             SFA_HUD_BRIGHT, SFA_HUD_SHADOW);
     }
 
     /* Shield hex display (bottom-left) */
@@ -1891,6 +1966,20 @@ static bool sfa_handle_touch_began(float sx, float sy) {
     float fx, fy;
     screen_to_fb(sx, sy, &fx, &fy);
 
+    /* Phase transitions on click */
+    if (sfa.phase == SFA_PHASE_BRIEFING) {
+        sfa.phase = SFA_PHASE_COMBAT;
+        return true;
+    }
+    if (sfa.phase == SFA_PHASE_STATS) {
+        sfa.initialized = false;  /* reset for next play */
+        app_state = STATE_MENU;
+        return true;
+    }
+    if (sfa.phase == SFA_PHASE_VICTORY) {
+        return true;  /* absorb clicks during victory countdown */
+    }
+
     /* Check MENU button */
     int mbx = FB_WIDTH - 32, mby = 3, mbw = 30, mbh = 11;
     if (fx >= mbx && fx <= mbx + mbw && fy >= mby && fy <= mby + mbh) {
@@ -1907,29 +1996,19 @@ static bool sfa_handle_touch_began(float sx, float sy) {
         if (mdx * mdx + mdy * mdy < (float)(sr * sr)) {
             float max_range = 60.0f;
             float map_r = (float)(sr - 4);
-            float cyaw = sfa.cam_target_yaw;
-            float rc = cosf(cyaw), rs = sinf(cyaw);
             int best = -1;
             float best_d = 10.0f; /* pixel threshold */
             for (int i = 0; i < sfa.npc_count; i++) {
                 if (!sfa.npcs[i].alive) continue;
                 float ddx = sfa.npcs[i].x - sfa.player.x;
                 float ddz = sfa.npcs[i].z - sfa.player.z;
-                /* Rotate by -cam_yaw to match minimap rendering */
-                float rrx =  ddx * rc + ddz * rs;
-                float rrz = -ddx * rs + ddz * rc;
-                float dist = sqrtf(rrx * rrx + rrz * rrz);
-                float emx, emy;
-                if (dist > max_range) {
-                    emx = (rrx / dist) * map_r;
-                    emy = (rrz / dist) * map_r;
-                } else {
-                    float scale = map_r / max_range;
-                    emx = rrx * scale;
-                    emy = rrz * scale;
-                }
-                int ex = scx + (int)emx;
-                int ey = scy - (int)emy;
+                float dist = sqrtf(ddx * ddx + ddz * ddz);
+                /* Unit direction * clamped distance (no rotation, X negated to match dial) */
+                float r = (dist < 0.01f) ? 0.0f : fminf(dist / max_range, 1.0f) * map_r;
+                float ux = (dist < 0.01f) ? 0.0f : ddx / dist;
+                float uz = (dist < 0.01f) ? 0.0f : ddz / dist;
+                int ex = scx - (int)(ux * r);  /* minimap right = world -X */
+                int ey = scy - (int)(uz * r);
                 float pd = sqrtf((fx - ex) * (fx - ex) + (fy - ey) * (fy - ey));
                 if (pd < best_d) { best_d = pd; best = i; }
             }
@@ -2086,6 +2165,9 @@ static void sfa_handle_mouse_move(float sx, float sy) {
 }
 
 static bool sfa_handle_mouse_click(float sx, float sy) {
+    /* Phase transitions handled by touch_began */
+    if (sfa.phase != SFA_PHASE_COMBAT) return false;
+
     float fx, fy;
     screen_to_fb(sx, sy, &fx, &fy);
     sfa.mouse_fb_x = fx;
@@ -2110,6 +2192,23 @@ static bool sfa_handle_mouse_click(float sx, float sy) {
 /* ── Key input ───────────────────────────────────────────────────── */
 
 static void sfa_handle_key_down(sapp_keycode key) {
+    /* Phase transition keys */
+    if (sfa.phase == SFA_PHASE_BRIEFING) {
+        if (key == SAPP_KEYCODE_SPACE || key == SAPP_KEYCODE_ENTER) {
+            sfa.phase = SFA_PHASE_COMBAT;
+        }
+        return;
+    }
+    if (sfa.phase == SFA_PHASE_STATS) {
+        if (key == SAPP_KEYCODE_SPACE || key == SAPP_KEYCODE_ENTER ||
+            key == SAPP_KEYCODE_ESCAPE) {
+            sfa.initialized = false;
+            app_state = STATE_MENU;
+        }
+        return;
+    }
+    if (sfa.phase == SFA_PHASE_VICTORY) return;
+
     sfa_ship *s = &sfa.player;
 
     switch (key) {
@@ -2180,10 +2279,211 @@ static void sfa_handle_key_up(sapp_keycode key) {
     }
 }
 
+/* ── Briefing screen ─────────────────────────────────────────────── */
+
+static void sfa_draw_briefing(sr_framebuffer *fb_ptr) {
+    int W = fb_ptr->width, H = fb_ptr->height;
+    uint32_t *px = fb_ptr->color;
+
+    /* Dark background */
+    for (int i = 0; i < W * H; i++) px[i] = SFA_BG_COLOR;
+
+    uint32_t white  = 0xFFFFFFFF;
+    uint32_t gray   = 0xFFAAAAAA;
+    uint32_t accent = SFA_HUD_ACCENT;
+    uint32_t warn   = 0xFF4466FF;
+    uint32_t green  = 0xFF44CC44;
+    uint32_t shadow = SFA_HUD_SHADOW;
+
+    /* Title */
+    sr_draw_text_shadow(px, W, H, (W - 18*6)/2, 16, "SPACE FLEET ASSAULT", white, shadow);
+    sr_draw_text_shadow(px, W, H, (W - 15*6)/2, 30, "MISSION BRIEFING", accent, shadow);
+
+    /* Divider */
+    sfa_draw_rect(px, W, H, W/2 - 100, 42, W/2 + 100, 43, 0xFF444444);
+
+    /* YOUR SHIP section (left half) */
+    int lx = 30;
+    int ly = 52;
+    sr_draw_text_shadow(px, W, H, lx, ly, "YOUR SHIP", accent, shadow);
+    ly += 14;
+    sr_draw_text_shadow(px, W, H, lx, ly, "Federation Cruiser", white, shadow);
+    ly += 16;
+
+    sr_draw_text_shadow(px, W, H, lx, ly, "Hull:      100 HP", gray, shadow);  ly += 10;
+    sr_draw_text_shadow(px, W, H, lx, ly, "Shields:   6 x 100", gray, shadow); ly += 10;
+    sr_draw_text_shadow(px, W, H, lx, ly, "Max speed: 12 m/s", gray, shadow);  ly += 10;
+    sr_draw_text_shadow(px, W, H, lx, ly, "Turn rate: 115 deg/s", gray, shadow); ly += 16;
+
+    sr_draw_text_shadow(px, W, H, lx, ly, "Weapons", accent, shadow); ly += 12;
+    sr_draw_text_shadow(px, W, H, lx, ly,     "Phasers",   white, shadow);
+    sr_draw_text_shadow(px, W, H, lx+80, ly,  "150 deg arc", gray, shadow);
+    sr_draw_text_shadow(px, W, H, lx+160, ly, "8 dmg", gray, shadow);
+    ly += 10;
+    sr_draw_text_shadow(px, W, H, lx, ly,     "Torpedoes", white, shadow);
+    sr_draw_text_shadow(px, W, H, lx+80, ly,  "30 deg arc", gray, shadow);
+    sr_draw_text_shadow(px, W, H, lx+160, ly, "25 dmg", gray, shadow);
+    ly += 12;
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Torpedo ammo: %d", sfa.player.torpedoes_remaining);
+        sr_draw_text_shadow(px, W, H, lx, ly, buf, gray, shadow);
+    }
+
+    /* ENEMY section (right half) */
+    int rx = W / 2 + 10;
+    int ry = 52;
+    sr_draw_text_shadow(px, W, H, rx, ry, "HOSTILES", warn, shadow);
+    ry += 14;
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%dx Klingon Bird of Prey", sfa.npc_count);
+        sr_draw_text_shadow(px, W, H, rx, ry, buf, white, shadow);
+    }
+    ry += 16;
+
+    sr_draw_text_shadow(px, W, H, rx, ry, "Hull:      100 HP", gray, shadow);  ry += 10;
+    sr_draw_text_shadow(px, W, H, rx, ry, "Shields:   6 x 100", gray, shadow); ry += 10;
+    sr_draw_text_shadow(px, W, H, rx, ry, "Max speed: 6 m/s", gray, shadow);   ry += 10;
+    sr_draw_text_shadow(px, W, H, rx, ry, "Turn rate: 115 deg/s", gray, shadow); ry += 16;
+
+    sr_draw_text_shadow(px, W, H, rx, ry, "Weapons", warn, shadow); ry += 12;
+    sr_draw_text_shadow(px, W, H, rx, ry,     "Disruptors", white, shadow);
+    sr_draw_text_shadow(px, W, H, rx+80, ry,  "150 deg arc", gray, shadow);
+    sr_draw_text_shadow(px, W, H, rx+160, ry, "5.6 dmg", gray, shadow);
+    ry += 10;
+    sr_draw_text_shadow(px, W, H, rx, ry,     "Torpedoes", white, shadow);
+    sr_draw_text_shadow(px, W, H, rx+80, ry,  "30 deg arc", gray, shadow);
+    sr_draw_text_shadow(px, W, H, rx+160, ry, "25 dmg", gray, shadow);
+
+    /* Objective */
+    int oy = H - 56;
+    sfa_draw_rect(px, W, H, W/2 - 100, oy - 4, W/2 + 100, oy - 3, 0xFF444444);
+    sr_draw_text_shadow(px, W, H, (W - 9*6)/2, oy, "OBJECTIVE", accent, shadow);
+    sr_draw_text_shadow(px, W, H, (W - 28*6)/2, oy + 12, "Destroy all hostile vessels", green, shadow);
+
+    /* Prompt */
+    float blink = sinf(sfa.time * 4.0f);
+    if (blink > 0) {
+        sr_draw_text_shadow(px, W, H, (W - 22*6)/2, H - 20,
+                             "Click to begin mission", white, shadow);
+    }
+}
+
+/* ── Victory overlay ─────────────────────────────────────────────── */
+
+static void sfa_draw_victory_overlay(uint32_t *px, int W, int H) {
+    /* Darken the scene */
+    for (int i = 0; i < W * H; i++) {
+        uint32_t c = px[i];
+        uint8_t r = ((c      ) & 0xFF) >> 1;
+        uint8_t g = ((c >>  8) & 0xFF) >> 1;
+        uint8_t b = ((c >> 16) & 0xFF) >> 1;
+        uint8_t a = (c >> 24) & 0xFF;
+        px[i] = (a << 24) | (b << 16) | (g << 8) | r;
+    }
+
+    uint32_t white  = 0xFFFFFFFF;
+    uint32_t accent = SFA_HUD_ACCENT;
+    uint32_t shadow = SFA_HUD_SHADOW;
+
+    sr_draw_text_shadow(px, W, H, (W - 16*6)/2, H/2 - 20,
+                         "MISSION COMPLETE", white, shadow);
+
+    /* Countdown */
+    char buf[32];
+    int secs = (int)ceilf(sfa.phase_timer);
+    if (secs < 0) secs = 0;
+    snprintf(buf, sizeof(buf), "Debrief in %d...", secs);
+    int tw = (int)strlen(buf) * 6;
+    sr_draw_text_shadow(px, W, H, (W - tw)/2, H/2 + 4, buf, accent, shadow);
+}
+
+/* ── Stats summary screen ────────────────────────────────────────── */
+
+static void sfa_draw_stats_screen(sr_framebuffer *fb_ptr) {
+    int W = fb_ptr->width, H = fb_ptr->height;
+    uint32_t *px = fb_ptr->color;
+
+    /* Dark background */
+    for (int i = 0; i < W * H; i++) px[i] = SFA_BG_COLOR;
+
+    uint32_t white  = 0xFFFFFFFF;
+    uint32_t gray   = 0xFFAAAAAA;
+    uint32_t accent = SFA_HUD_ACCENT;
+    uint32_t green  = 0xFF44CC44;
+    uint32_t shadow = SFA_HUD_SHADOW;
+
+    sr_draw_text_shadow(px, W, H, (W - 15*6)/2, 24, "MISSION DEBRIEF", white, shadow);
+    sfa_draw_rect(px, W, H, W/2 - 80, 38, W/2 + 80, 39, 0xFF444444);
+
+    int cx = W / 2 - 80;
+    int y = 50;
+    char buf[48];
+
+    sr_draw_text_shadow(px, W, H, cx, y, "COMBAT RESULTS", accent, shadow);
+    y += 16;
+
+    snprintf(buf, sizeof(buf), "Enemies destroyed: %d/%d",
+             sfa.stats.enemies_destroyed, sfa.npc_count);
+    sr_draw_text_shadow(px, W, H, cx, y, buf, white, shadow); y += 12;
+
+    snprintf(buf, sizeof(buf), "Phasers fired:     %d", sfa.stats.phasers_fired);
+    sr_draw_text_shadow(px, W, H, cx, y, buf, gray, shadow); y += 12;
+
+    snprintf(buf, sizeof(buf), "Torpedoes fired:   %d", sfa.stats.torpedoes_fired);
+    sr_draw_text_shadow(px, W, H, cx, y, buf, gray, shadow); y += 12;
+
+    snprintf(buf, sizeof(buf), "Damage dealt:      %.0f", sfa.stats.damage_dealt);
+    sr_draw_text_shadow(px, W, H, cx, y, buf, gray, shadow); y += 12;
+
+    snprintf(buf, sizeof(buf), "Damage taken:      %.0f", sfa.stats.damage_taken);
+    sr_draw_text_shadow(px, W, H, cx, y, buf, gray, shadow); y += 16;
+
+    /* Combat time */
+    int mins = (int)(sfa.stats.combat_time / 60.0f);
+    int secs = (int)(sfa.stats.combat_time) % 60;
+    snprintf(buf, sizeof(buf), "Mission time:      %d:%02d", mins, secs);
+    sr_draw_text_shadow(px, W, H, cx, y, buf, gray, shadow); y += 16;
+
+    /* Player ship status */
+    sr_draw_text_shadow(px, W, H, cx, y, "SHIP STATUS", accent, shadow); y += 14;
+    snprintf(buf, sizeof(buf), "Hull integrity:    %d%%", (int)sfa.player.hull);
+    uint32_t hull_col = sfa.player.hull > 50 ? green : 0xFF4466FF;
+    sr_draw_text_shadow(px, W, H, cx, y, buf, hull_col, shadow); y += 12;
+
+    float total_shields = 0;
+    for (int i = 0; i < 6; i++) total_shields += sfa.player.shields[i];
+    snprintf(buf, sizeof(buf), "Shields remaining: %.0f%%", total_shields / 6.0f);
+    sr_draw_text_shadow(px, W, H, cx, y, buf, gray, shadow); y += 12;
+
+    snprintf(buf, sizeof(buf), "Torpedoes left:    %d", sfa.player.torpedoes_remaining);
+    sr_draw_text_shadow(px, W, H, cx, y, buf, gray, shadow);
+
+    /* Prompt */
+    float blink = sinf(sfa.time * 4.0f);
+    if (blink > 0) {
+        sr_draw_text_shadow(px, W, H, (W - 20*6)/2, H - 24,
+                             "Click to return home", white, shadow);
+    }
+}
+
 /* ── Main scene draw ─────────────────────────────────────────────── */
 
 static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
     if (!sfa.initialized) sfa_init();
+
+    sfa.time += dt;  /* always tick time for blinking effects */
+
+    /* Handle non-combat phases */
+    if (sfa.phase == SFA_PHASE_BRIEFING) {
+        sfa_draw_briefing(fb_ptr);
+        return;
+    }
+    if (sfa.phase == SFA_PHASE_STATS) {
+        sfa_draw_stats_screen(fb_ptr);
+        return;
+    }
 
     sfa_update(dt);
 
@@ -2580,6 +2880,11 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
 
     /* Draw HUD */
     sfa_draw_hud(fb_ptr, s);
+
+    /* Victory overlay (drawn on top of everything) */
+    if (sfa.phase == SFA_PHASE_VICTORY) {
+        sfa_draw_victory_overlay(px, W, H);
+    }
 }
 
 #endif /* SR_SCENE_SPACE_FLEET_H */
