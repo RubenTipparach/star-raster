@@ -695,7 +695,7 @@ static void event(const sapp_event *ev) {
 
     /* ── Space Fleet keys (handled before generic running state) ── */
     if (current_scene == SCENE_SPACE_FLEET) {
-        if (ev->key_code == SAPP_KEYCODE_TAB || ev->key_code == SAPP_KEYCODE_ESCAPE) {
+        if (ev->key_code == SAPP_KEYCODE_ESCAPE) {
             app_state = STATE_MENU;
             sfa_key_left = sfa_key_right = false;
         } else {
