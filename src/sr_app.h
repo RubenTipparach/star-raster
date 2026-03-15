@@ -44,7 +44,7 @@ static int    screenshot_counter;
 
 /* ── Scene / Menu state ─────────────────────────────────────────── */
 
-enum { SCENE_NEIGHBORHOOD, SCENE_CUBES, SCENE_PALETTE_HOUSE, SCENE_DUNGEON, SCENE_COUNT };
+enum { SCENE_NEIGHBORHOOD, SCENE_CUBES, SCENE_PALETTE_HOUSE, SCENE_DUNGEON, SCENE_SPACE_FLEET, SCENE_COUNT };
 enum { STATE_MENU, STATE_RUNNING };
 
 static int  app_state     = STATE_MENU;
@@ -56,6 +56,7 @@ static const char *scene_names[] = {
     "5000 CUBES",
     "PALETTE HOUSE",
     "DUNGEON CRAWLER",
+    "SPACE FLEET",
 };
 
 /* ── Simple RNG (deterministic) ─────────────────────────────────── */

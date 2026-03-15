@@ -40,6 +40,7 @@
 #include "sr_scene_cubes.h"
 #include "sr_scene_palette.h"
 #include "sr_scene_dungeon.h"
+#include "sr_scene_space_fleet.h"
 #include "sr_menu.h"
 #include "sr_mobile_input.h"
 
@@ -297,39 +298,42 @@ static void frame(void) {
         fps_timer -= 1.0;
     }
 
-    /* ── Camera ──────────────────────────────────────────────── */
-    float angle = (float)time_acc * 0.25f;
-    float cam_dist, cam_height;
-    sr_vec3 target_pos;
+    /* ── Camera (not used by Space Fleet — it has its own) ──── */
+    sr_mat4 vp;
+    if (current_scene != SCENE_SPACE_FLEET) {
+        float angle = (float)time_acc * 0.25f;
+        float cam_dist, cam_height;
+        sr_vec3 target_pos;
 
-    if (current_scene == SCENE_CUBES) {
-        cam_dist   = 45.0f;
-        cam_height = 20.0f;
-        target_pos = (sr_vec3){ 0, 5.0f, 0 };
-    } else if (current_scene == SCENE_PALETTE_HOUSE) {
-        cam_dist   = 10.0f;
-        cam_height = 5.0f;
-        target_pos = (sr_vec3){ 0, 1.5f, 0 };
-    } else {
-        cam_dist   = 28.0f;
-        cam_height = 12.0f;
-        target_pos = (sr_vec3){ 0, 1.5f, 0 };
+        if (current_scene == SCENE_CUBES) {
+            cam_dist   = 45.0f;
+            cam_height = 20.0f;
+            target_pos = (sr_vec3){ 0, 5.0f, 0 };
+        } else if (current_scene == SCENE_PALETTE_HOUSE) {
+            cam_dist   = 10.0f;
+            cam_height = 5.0f;
+            target_pos = (sr_vec3){ 0, 1.5f, 0 };
+        } else {
+            cam_dist   = 28.0f;
+            cam_height = 12.0f;
+            target_pos = (sr_vec3){ 0, 1.5f, 0 };
+        }
+
+        sr_vec3 eye = {
+            cosf(angle) * cam_dist,
+            cam_height,
+            sinf(angle) * cam_dist
+        };
+        sr_vec3 up = { 0, 1, 0 };
+
+        sr_mat4 view = sr_mat4_lookat(eye, target_pos, up);
+        sr_mat4 proj = sr_mat4_perspective(
+            60.0f * 3.14159f / 180.0f,
+            (float)FB_WIDTH / (float)FB_HEIGHT,
+            0.1f, 100.0f
+        );
+        vp = sr_mat4_mul(proj, view);
     }
-
-    sr_vec3 eye = {
-        cosf(angle) * cam_dist,
-        cam_height,
-        sinf(angle) * cam_dist
-    };
-    sr_vec3 up = { 0, 1, 0 };
-
-    sr_mat4 view = sr_mat4_lookat(eye, target_pos, up);
-    sr_mat4 proj = sr_mat4_perspective(
-        60.0f * 3.14159f / 180.0f,
-        (float)FB_WIDTH / (float)FB_HEIGHT,
-        0.1f, 100.0f
-    );
-    sr_mat4 vp = sr_mat4_mul(proj, view);
 
     /* ── CPU rasterize ───────────────────────────────────────── */
     sr_stats_reset();
@@ -338,6 +342,8 @@ static void frame(void) {
         clear_color = PAL_NIGHT_SKY;
     else if (current_scene == SCENE_DUNGEON)
         clear_color = 0xFF000000;
+    else if (current_scene == SCENE_SPACE_FLEET)
+        clear_color = SFA_BG_COLOR;
     else if (night_mode && current_scene == SCENE_NEIGHBORHOOD)
         clear_color = NIGHT_SKY_COLOR;
     else
@@ -396,6 +402,10 @@ static void frame(void) {
                     sr_draw_text_shadow(fb.color, fb.width, fb.height,
                                         3, 3, ibuf, 0xFFFFFFFF, 0xFF000000);
                 }
+                break;
+            case SCENE_SPACE_FLEET:
+                sr_fog_disable();
+                draw_space_fleet_scene(&fb, (float)dt);
                 break;
         }
     }
@@ -534,6 +544,43 @@ static void event(const sapp_event *ev) {
     double now_time = sapp_frame_count() * sapp_frame_duration();
 
     /* ── Touch / pointer tracking ────────────────────────────── */
+    /* ── Space Fleet touch routing ──────────────────────────── */
+    if (current_scene == SCENE_SPACE_FLEET && app_state == STATE_RUNNING) {
+        if (ev->type == SAPP_EVENTTYPE_MOUSE_DOWN && ev->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+            /* Try targeting first; only pass to steering if not consumed */
+            if (!sfa_handle_mouse_click(ev->mouse_x, ev->mouse_y))
+                sfa_handle_touch_began(ev->mouse_x, ev->mouse_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_MOUSE_MOVE) {
+            sfa_handle_mouse_move(ev->mouse_x, ev->mouse_y);
+            sfa_handle_touch_moved(ev->mouse_x, ev->mouse_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_MOUSE_UP && ev->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+            sfa_handle_touch_ended();
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && ev->num_touches > 0) {
+            /* Try targeting first; only pass to steering if not consumed */
+            if (!sfa_handle_mouse_click(ev->touches[0].pos_x, ev->touches[0].pos_y))
+                sfa_handle_touch_began(ev->touches[0].pos_x, ev->touches[0].pos_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_TOUCHES_MOVED && ev->num_touches > 0) {
+            sfa_handle_touch_moved(ev->touches[0].pos_x, ev->touches[0].pos_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_TOUCHES_ENDED && ev->num_touches > 0) {
+            sfa_handle_touch_ended();
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_TOUCHES_CANCELLED) {
+            sfa_handle_touch_ended();
+            return;
+        }
+    }
+
     if (ev->type == SAPP_EVENTTYPE_MOUSE_DOWN && ev->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
         dng_touch_began(ev->mouse_x, ev->mouse_y, now_time);
         if (current_scene != SCENE_DUNGEON || app_state != STATE_RUNNING ||
@@ -569,6 +616,13 @@ static void event(const sapp_event *ev) {
     }
     if (ev->type == SAPP_EVENTTYPE_TOUCHES_CANCELLED) {
         dng_touch_cancelled();
+        return;
+    }
+
+    /* ── Key up — space fleet needs this for smooth turning ── */
+    if (ev->type == SAPP_EVENTTYPE_KEY_UP) {
+        if (current_scene == SCENE_SPACE_FLEET && app_state == STATE_RUNNING)
+            sfa_handle_key_up(ev->key_code);
         return;
     }
 
@@ -626,10 +680,26 @@ static void event(const sapp_event *ev) {
                 menu_cursor = SCENE_DUNGEON;
                 app_state = STATE_RUNNING;
                 break;
+            case SAPP_KEYCODE_5:
+                current_scene = SCENE_SPACE_FLEET;
+                menu_cursor = SCENE_SPACE_FLEET;
+                app_state = STATE_RUNNING;
+                break;
             case SAPP_KEYCODE_ESCAPE:
                 app_state = STATE_RUNNING;
                 break;
             default: break;
+        }
+        return;
+    }
+
+    /* ── Space Fleet keys (handled before generic running state) ── */
+    if (current_scene == SCENE_SPACE_FLEET) {
+        if (ev->key_code == SAPP_KEYCODE_TAB || ev->key_code == SAPP_KEYCODE_ESCAPE) {
+            app_state = STATE_MENU;
+            sfa_key_left = sfa_key_right = false;
+        } else {
+            sfa_handle_key_down(ev->key_code);
         }
         return;
     }

@@ -8,7 +8,7 @@ static void draw_stats(sr_framebuffer *fb_ptr, int tris) {
     uint32_t white  = 0xFFFFFFFF;
     uint32_t shadow = 0xFF000000;
 
-    if (current_scene != SCENE_DUNGEON) {
+    if (current_scene != SCENE_DUNGEON && current_scene != SCENE_SPACE_FLEET) {
         snprintf(buf, sizeof(buf), "FPS: %d", fps_display);
         sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
                             3, 3, buf, white, shadow);
@@ -133,10 +133,6 @@ static void draw_menu(sr_framebuffer *fb_ptr) {
         sr_draw_text_shadow(px, W, H, 150, 115 + i * 15, line, color, shadow);
     }
 
-    sr_draw_text_shadow(px, W, H, 130, 180, "UP/DOWN  SELECT", gray, shadow);
-    sr_draw_text_shadow(px, W, H, 130, 195, "ENTER    START", gray, shadow);
-    sr_draw_text_shadow(px, W, H, 130, 210, "TAB/ESC  MENU", gray, shadow);
-    sr_draw_text_shadow(px, W, H, 130, 225, "TAP      SELECT/BACK", gray, shadow);
 }
 
 #endif /* SR_MENU_H */
