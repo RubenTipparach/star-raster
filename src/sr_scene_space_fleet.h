@@ -12,7 +12,7 @@
 #define SFA_TWO_PI       6.28318530f
 #define SFA_DEG2RAD      (SFA_PI / 180.0f)
 
-#define SFA_ARENA_SIZE   80.0f      /* half-extent of playable area */
+#define SFA_ARENA_SIZE   160.0f     /* half-extent of playable area */
 #define SFA_GRID_SPACING 10.0f      /* starfield grid spacing (sparser) */
 
 /* Speed levels (impulse) */
@@ -32,6 +32,7 @@ static const char *sfa_speed_names[SFA_NUM_SPEEDS] = {
 
 /* Ship turn rate (radians/sec) */
 #define SFA_TURN_RATE    2.0f
+#define SFA_STEER_DISC_R 4.0f    /* world-space steering disc radius */
 
 /* Camera — pitched angle, behind and above the ship */
 #define SFA_CAM_HEIGHT   18.0f       /* height above ship */
@@ -75,6 +76,25 @@ static inline uint32_t sfa_pal_shade(int base_idx, int shade) {
 
 #define SFA_MAX_NPC 4
 
+/* Weapons */
+#define SFA_PHASER_RANGE     40.0f
+#define SFA_PHASER_DAMAGE    8.0f
+#define SFA_PHASER_COOLDOWN  2.0f
+#define SFA_PHASER_BEAM_TIME 0.4f
+#define SFA_PHASER_ARC       2.618f   /* ~150 deg half-arc = broadside */
+
+#define SFA_TORP_RANGE       55.0f
+#define SFA_TORP_DAMAGE      25.0f
+#define SFA_TORP_COOLDOWN    5.0f
+#define SFA_TORP_SPEED       20.0f
+#define SFA_TORP_ARC         0.524f   /* ~30 deg half-arc = forward only */
+#define SFA_TORP_LIFETIME    4.0f
+#define SFA_TORP_HIT_RADIUS  1.5f
+
+#define SFA_MAX_BEAMS        8
+#define SFA_MAX_TORPS        16
+#define SFA_MAX_EXPLOSIONS   16
+
 /* Targeting bracket colors */
 #define SFA_TARGET_HOVER    0xFF88AACC   /* dim bracket on hover */
 #define SFA_TARGET_SELECTED 0xFFFFDD44   /* bright blue glow (ABGR) when selected */
@@ -97,7 +117,46 @@ typedef struct {
     /* Ship identity */
     uint32_t color_hull;      /* custom hull color (0 = use default) */
     uint32_t color_accent;    /* custom accent color */
+
+    /* Weapons */
+    float phaser_cooldown;    /* seconds until phaser ready (0 = ready) */
+    float torpedo_cooldown;   /* seconds until torpedo ready (0 = ready) */
+    int   torpedoes_remaining;
+    bool  alive;
+
+    /* NPC AI: backoff timer — retreat after close engagement */
+    float backoff_timer;      /* >0 = retreating, counts down */
 } sfa_ship;
+
+/* ── Combat visual effects ──────────────────────────────────────── */
+
+typedef struct {
+    float x0, z0;        /* origin (firer position) */
+    float x1, z1;        /* target position */
+    float timer;
+    uint32_t color;
+    bool active;
+    int source;          /* -1 = player, 0+ = NPC index */
+    int target;          /* -1 = player, 0+ = NPC index */
+} sfa_beam;
+
+typedef struct {
+    float x, z;
+    float dx, dz;        /* velocity */
+    float timer;
+    int   owner;         /* -1 = player, 0..N = npc index */
+    int   target;        /* npc index, or -1 = targets player */
+    uint32_t color;
+    bool  active;
+} sfa_torpedo;
+
+typedef struct {
+    float x, z;
+    float timer;
+    float max_timer;
+    uint32_t color;
+    bool active;
+} sfa_explosion;
 
 typedef struct {
     sfa_ship player;
@@ -112,7 +171,12 @@ typedef struct {
     float    mouse_fb_x, mouse_fb_y;  /* mouse pos in fb coords */
     float    cam_target_yaw;      /* smoothed camera yaw toward target */
     sr_mat4  last_vp;             /* cached VP matrix for input-time hover */
+    sr_mat4  last_inv_vp;         /* inverse VP for unprojection */
+    sr_vec3  last_eye;            /* camera eye position */
     int      last_fb_w, last_fb_h;
+
+    /* Weapon hover (for arc display) */
+    int      hovered_weapon;      /* -1=none, 0=phaser, 1=torpedo */
 
     /* Touch controls */
     bool     touch_steering;      /* is user dragging to steer? */
@@ -120,6 +184,11 @@ typedef struct {
     float    touch_steer_cy;
     float    touch_steer_angle;   /* current angle from touch */
     bool     touch_throttle;      /* throttle touch active */
+
+    /* Combat effects */
+    sfa_beam       beams[SFA_MAX_BEAMS];
+    sfa_torpedo    torpedoes[SFA_MAX_TORPS];
+    sfa_explosion  explosions[SFA_MAX_EXPLOSIONS];
 } sfa_state;
 
 static sfa_state sfa;
@@ -144,6 +213,12 @@ static void sfa_init_ship(sfa_ship *s, float x, float z, float heading,
     s->hull = 100.0f;
     s->color_hull = hull_col;
     s->color_accent = accent_col;
+    s->phaser_cooldown = 0;
+    s->torpedo_cooldown = 0;
+    s->torpedoes_remaining = 20;
+    s->alive = true;
+    s->current_speed = 0;
+    s->backoff_timer = 0;
     for (int i = 0; i < 6; i++)
         s->shields[i] = 100.0f;
 }
@@ -174,6 +249,129 @@ static float sfa_normalize_angle(float a) {
     while (a >  SFA_PI) a -= SFA_TWO_PI;
     while (a < -SFA_PI) a += SFA_TWO_PI;
     return a;
+}
+
+/* ── Combat helpers ─────────────────────────────────────────────── */
+
+/* Which shield facing (0-5) is hit by an attack from (ax,az) on ship s? */
+static int sfa_shield_facing(sfa_ship *s, float ax, float az) {
+    float dx = ax - s->x;
+    float dz = az - s->z;
+    float bearing = sfa_normalize_angle(atan2f(dx, dz) - s->heading);
+    float deg = bearing * 180.0f / SFA_PI;
+    /* F(-30..30), FR(30..90), AR(90..150), A(>150 or <-150), AL(-150..-90), FL(-90..-30) */
+    if (deg >= -30.0f && deg < 30.0f)   return 0; /* F */
+    if (deg >= 30.0f  && deg < 90.0f)   return 1; /* FR */
+    if (deg >= 90.0f  && deg < 150.0f)  return 2; /* AR */
+    if (deg >= 150.0f || deg < -150.0f) return 3; /* A */
+    if (deg >= -150.0f && deg < -90.0f) return 4; /* AL */
+    return 5; /* FL */
+}
+
+static void sfa_apply_damage(sfa_ship *target, float damage, int shield_idx) {
+    float remaining = damage;
+    if (target->shields[shield_idx] > 0) {
+        if (target->shields[shield_idx] >= remaining) {
+            target->shields[shield_idx] -= remaining;
+            remaining = 0;
+        } else {
+            remaining -= target->shields[shield_idx];
+            target->shields[shield_idx] = 0;
+        }
+    }
+    if (remaining > 0) {
+        target->hull -= remaining;
+        if (target->hull <= 0) {
+            target->hull = 0;
+            target->alive = false;
+        }
+    }
+}
+
+/* Is target at (tx,tz) within weapon arc (half-angle) from ship s? */
+static bool sfa_in_weapon_arc(sfa_ship *s, float tx, float tz, float arc_half) {
+    float dx = tx - s->x;
+    float dz = tz - s->z;
+    float bearing = atan2f(-dx, dz);  /* matches heading convention */
+    float diff = sfa_normalize_angle(bearing - s->heading);
+    return (diff >= -arc_half && diff <= arc_half);
+}
+
+static void sfa_spawn_beam(float x0, float z0, float x1, float z1,
+                            uint32_t color, int source, int target) {
+    for (int i = 0; i < SFA_MAX_BEAMS; i++) {
+        if (!sfa.beams[i].active) {
+            sfa.beams[i] = (sfa_beam){
+                x0, z0, x1, z1, SFA_PHASER_BEAM_TIME, color, true, source, target
+            };
+            return;
+        }
+    }
+}
+
+static void sfa_spawn_explosion(float x, float z, float duration, uint32_t color) {
+    for (int i = 0; i < SFA_MAX_EXPLOSIONS; i++) {
+        if (!sfa.explosions[i].active) {
+            sfa.explosions[i] = (sfa_explosion){ x, z, duration, duration, color, true };
+            return;
+        }
+    }
+}
+
+static void sfa_spawn_torpedo_proj(sfa_ship *firer, int owner_idx, int target_idx,
+                                    float tx, float tz, uint32_t color) {
+    for (int i = 0; i < SFA_MAX_TORPS; i++) {
+        if (!sfa.torpedoes[i].active) {
+            float dx = tx - firer->x;
+            float dz = tz - firer->z;
+            float len = sqrtf(dx * dx + dz * dz);
+            if (len < 0.01f) return;
+            sfa.torpedoes[i] = (sfa_torpedo){
+                firer->x, firer->z,
+                (dx / len) * SFA_TORP_SPEED, (dz / len) * SFA_TORP_SPEED,
+                SFA_TORP_LIFETIME, owner_idx, target_idx, color, true
+            };
+            return;
+        }
+    }
+}
+
+/* Fire phasers — instant hit beam weapon.
+   source_idx/target_idx: -1 = player, 0+ = NPC index */
+static void sfa_fire_phaser(sfa_ship *firer, sfa_ship *target,
+                              int source_idx, int target_idx) {
+    if (firer->phaser_cooldown > 0) return;
+    if (!target->alive) return;
+
+    float dx = target->x - firer->x;
+    float dz = target->z - firer->z;
+    float dist = sqrtf(dx * dx + dz * dz);
+    if (dist > SFA_PHASER_RANGE) return;
+    if (!sfa_in_weapon_arc(firer, target->x, target->z, SFA_PHASER_ARC)) return;
+
+    firer->phaser_cooldown = SFA_PHASER_COOLDOWN;
+
+    int shield_idx = sfa_shield_facing(target, firer->x, firer->z);
+    sfa_apply_damage(target, SFA_PHASER_DAMAGE, shield_idx);
+
+    sfa_spawn_beam(firer->x, firer->z, target->x, target->z,
+                    0xFF4488FF, source_idx, target_idx);
+    sfa_spawn_explosion(target->x, target->z, 0.3f, 0xFF55CCFF);
+}
+
+/* Fire torpedo — forward-arc projectile */
+static void sfa_fire_torpedo(sfa_ship *firer, sfa_ship *target,
+                              int owner_idx, int target_idx) {
+    if (firer->torpedo_cooldown > 0) return;
+    if (firer->torpedoes_remaining <= 0) return;
+    if (!target->alive) return;
+    if (!sfa_in_weapon_arc(firer, target->x, target->z, SFA_TORP_ARC)) return;
+
+    firer->torpedo_cooldown = SFA_TORP_COOLDOWN;
+    firer->torpedoes_remaining--;
+
+    sfa_spawn_torpedo_proj(firer, owner_idx, target_idx,
+                           target->x, target->z, 0xFF3366FF); /* reddish glow */
 }
 
 /* ── Update ──────────────────────────────────────────────────────── */
@@ -223,13 +421,92 @@ static void sfa_update(float dt) {
     if (s->z >  SFA_ARENA_SIZE) s->z =  SFA_ARENA_SIZE;
     if (s->z < -SFA_ARENA_SIZE) s->z = -SFA_ARENA_SIZE;
 
-    /* Update NPC ships (patrol in circles, same physics as player) */
+    /* Tick player weapon cooldowns */
+    s->phaser_cooldown -= dt;
+    if (s->phaser_cooldown < 0) s->phaser_cooldown = 0;
+    s->torpedo_cooldown -= dt;
+    if (s->torpedo_cooldown < 0) s->torpedo_cooldown = 0;
+
+    /* Update NPC ships (combat AI + physics) */
     for (int i = 0; i < sfa.npc_count; i++) {
         sfa_ship *npc = &sfa.npcs[i];
-        /* Slow turn to patrol in a circle */
-        npc->target_heading += 0.3f * dt;
+        if (!npc->alive) continue;
+
+        /* Tick NPC cooldowns */
+        npc->phaser_cooldown -= dt;
+        if (npc->phaser_cooldown < 0) npc->phaser_cooldown = 0;
+        npc->torpedo_cooldown -= dt;
+        if (npc->torpedo_cooldown < 0) npc->torpedo_cooldown = 0;
+
+        /* AI decision: combat or patrol */
+        float pdx = sfa.player.x - npc->x;
+        float pdz = sfa.player.z - npc->z;
+        float pdist = sqrtf(pdx * pdx + pdz * pdz);
+
+        /* Tick backoff timer */
+        if (npc->backoff_timer > 0) npc->backoff_timer -= dt;
+
+        /* Border avoidance — turn toward center when near edge */
+        float border_margin = 15.0f;
+        bool npc_at_border = false;
+        if (npc->x >  SFA_ARENA_SIZE - border_margin ||
+            npc->x < -SFA_ARENA_SIZE + border_margin ||
+            npc->z >  SFA_ARENA_SIZE - border_margin ||
+            npc->z < -SFA_ARENA_SIZE + border_margin) {
+            npc->target_heading = atan2f(npc->x, -npc->z); /* face toward center (0,0) */
+            npc->speed_level = SFA_SPEED_HALF;
+            npc_at_border = true;
+        }
+
+        if (npc_at_border) {
+            /* Already set heading toward center above */
+        } else if (npc->backoff_timer > 0) {
+            /* Retreat mode — turn away from player, slow retreat */
+            float away_bearing = atan2f(pdx, -pdz); /* opposite of toward-player */
+            npc->target_heading = away_bearing;
+            npc->speed_level = SFA_SPEED_QUARTER;
+        } else if (pdist < SFA_PHASER_RANGE * 1.2f && sfa.player.alive) {
+            /* Combat mode — turn toward player */
+            float target_bearing = atan2f(-pdx, pdz);
+            npc->target_heading = target_bearing;
+
+            /* Too close — trigger backoff (15-30 seconds) */
+            if (pdist < SFA_PHASER_RANGE * 0.1f) {
+                npc->backoff_timer = 15.0f + rng_float() * 15.0f;
+            }
+
+            /* Speed based on distance */
+            if (pdist > SFA_PHASER_RANGE * 0.8f)
+                npc->speed_level = SFA_SPEED_HALF;
+            else
+                npc->speed_level = SFA_SPEED_QUARTER;
+
+            /* Fire phasers (slightly weaker, slightly slower) */
+            if (npc->phaser_cooldown <= 0 && pdist <= SFA_PHASER_RANGE &&
+                sfa_in_weapon_arc(npc, sfa.player.x, sfa.player.z, SFA_PHASER_ARC)) {
+                int si = sfa_shield_facing(&sfa.player, npc->x, npc->z);
+                sfa_apply_damage(&sfa.player, SFA_PHASER_DAMAGE * 0.7f, si);
+                npc->phaser_cooldown = SFA_PHASER_COOLDOWN * 1.2f;
+                sfa_spawn_beam(npc->x, npc->z, sfa.player.x, sfa.player.z, 0xFF22CC22, i, -1);
+                sfa_spawn_explosion(sfa.player.x, sfa.player.z, 0.3f, 0xFF44FF44);
+            }
+
+            /* Fire torpedoes (slower cooldown) */
+            if (npc->torpedo_cooldown <= 0 && npc->torpedoes_remaining > 0 &&
+                pdist <= SFA_TORP_RANGE &&
+                sfa_in_weapon_arc(npc, sfa.player.x, sfa.player.z, SFA_TORP_ARC)) {
+                npc->torpedo_cooldown = SFA_TORP_COOLDOWN * 1.5f;
+                npc->torpedoes_remaining--;
+                sfa_spawn_torpedo_proj(npc, i, -1,
+                    sfa.player.x, sfa.player.z, 0xFF22AA22);
+            }
+        } else {
+            /* Patrol mode — slow circle */
+            npc->target_heading += 0.3f * dt;
+        }
         npc->target_heading = sfa_normalize_angle(npc->target_heading);
 
+        /* NPC physics (same as player) */
         float ndiff = sfa_normalize_angle(npc->target_heading - npc->heading);
         float nmax = SFA_TURN_RATE * dt;
         if (ndiff > nmax) ndiff = nmax;
@@ -241,7 +518,6 @@ static void sfa_update(float dt) {
         npc->visual_heading += nvdiff * 8.0f * dt;
         npc->visual_heading = sfa_normalize_angle(npc->visual_heading);
 
-        /* Accelerate toward target speed (same as player) */
         float ntarget_speed = sfa_speed_values[npc->speed_level];
         if (npc->current_speed < ntarget_speed) {
             npc->current_speed += accel * dt;
@@ -251,15 +527,63 @@ static void sfa_update(float dt) {
             if (npc->current_speed < ntarget_speed) npc->current_speed = ntarget_speed;
         }
 
-        /* Move in facing direction */
         npc->x -= sinf(npc->heading) * npc->current_speed * dt;
         npc->z += cosf(npc->heading) * npc->current_speed * dt;
 
-        /* Clamp NPC to arena */
         if (npc->x >  SFA_ARENA_SIZE) npc->x =  SFA_ARENA_SIZE;
         if (npc->x < -SFA_ARENA_SIZE) npc->x = -SFA_ARENA_SIZE;
         if (npc->z >  SFA_ARENA_SIZE) npc->z =  SFA_ARENA_SIZE;
         if (npc->z < -SFA_ARENA_SIZE) npc->z = -SFA_ARENA_SIZE;
+    }
+
+    /* Update beam effects — track source/target positions */
+    for (int i = 0; i < SFA_MAX_BEAMS; i++) {
+        sfa_beam *b = &sfa.beams[i];
+        if (!b->active) continue;
+        b->timer -= dt;
+        if (b->timer <= 0) { b->active = false; continue; }
+
+        /* Update origin to follow source ship */
+        sfa_ship *src = (b->source == -1) ? &sfa.player : &sfa.npcs[b->source];
+        b->x0 = src->x;
+        b->z0 = src->z;
+
+        /* Update endpoint to follow target ship */
+        sfa_ship *tgt = (b->target == -1) ? &sfa.player : &sfa.npcs[b->target];
+        b->x1 = tgt->x;
+        b->z1 = tgt->z;
+    }
+
+    /* Update torpedoes */
+    for (int i = 0; i < SFA_MAX_TORPS; i++) {
+        sfa_torpedo *tp = &sfa.torpedoes[i];
+        if (!tp->active) continue;
+
+        tp->x += tp->dx * dt;
+        tp->z += tp->dz * dt;
+        tp->timer -= dt;
+        if (tp->timer <= 0) { tp->active = false; continue; }
+
+        /* Collision with target */
+        sfa_ship *victim = (tp->target == -1) ? &sfa.player : &sfa.npcs[tp->target];
+        if (!victim->alive) { tp->active = false; continue; }
+
+        float tdx = tp->x - victim->x;
+        float tdz = tp->z - victim->z;
+        if (tdx * tdx + tdz * tdz < SFA_TORP_HIT_RADIUS * SFA_TORP_HIT_RADIUS) {
+            int si = sfa_shield_facing(victim, tp->x, tp->z);
+            sfa_apply_damage(victim, SFA_TORP_DAMAGE, si);
+            sfa_spawn_explosion(tp->x, tp->z, 0.6f, 0xFF2244FF);
+            tp->active = false;
+        }
+    }
+
+    /* Update explosions */
+    for (int i = 0; i < SFA_MAX_EXPLOSIONS; i++) {
+        if (sfa.explosions[i].active) {
+            sfa.explosions[i].timer -= dt;
+            if (sfa.explosions[i].timer <= 0) sfa.explosions[i].active = false;
+        }
     }
 
     /* Smooth camera yaw toward selected target (Phantom-Nebula approach) */
@@ -630,29 +954,52 @@ static void sfa_draw_starfield(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
 
 /* ── Arena boundary markers ──────────────────────────────────────── */
 
-static void sfa_draw_arena_boundary(sr_framebuffer *fb_ptr, const sr_mat4 *vp) {
+static void sfa_draw_arena_boundary(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
+                                       float px, float pz) {
     float s = SFA_ARENA_SIZE;
     float y = -0.05f;
-    float w = 0.15f;  /* line width */
-    uint32_t col = 0xFF222255;  /* dim red border */
+    float vis_dist = 40.0f;  /* distance at which border starts appearing */
 
-    /* Four edges */
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(-s, y, -s,   0,0, col), sr_vert_c(-s, y, s,    0,1, col),
-        sr_vert_c(-s+w, y, s,  1,1, col), sr_vert_c(-s+w, y, -s, 1,0, col),
-        NULL, vp);
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(s-w, y, -s,  0,0, col), sr_vert_c(s-w, y, s,   0,1, col),
-        sr_vert_c(s, y, s,     1,1, col), sr_vert_c(s, y, -s,    1,0, col),
-        NULL, vp);
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(-s, y, -s,   0,0, col), sr_vert_c(-s, y, -s+w, 0,1, col),
-        sr_vert_c(s, y, -s+w,  1,1, col), sr_vert_c(s, y, -s,    1,0, col),
-        NULL, vp);
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(-s, y, s-w,  0,0, col), sr_vert_c(-s, y, s,    0,1, col),
-        sr_vert_c(s, y, s,     1,1, col), sr_vert_c(s, y, s-w,   1,0, col),
-        NULL, vp);
+    /* Only draw edges the player is near — compute distance to each edge */
+    struct { float x0,z0,x1,z1; float player_dist; } edges[4] = {
+        { -s, -s, -s,  s, px - (-s) },   /* left   (player dist = px + s) */
+        {  s, -s,  s,  s, s - px     },   /* right  (player dist = s - px) */
+        { -s, -s,  s, -s, pz - (-s) },   /* bottom (player dist = pz + s) */
+        { -s,  s,  s,  s, s - pz     },   /* top    (player dist = s - pz) */
+    };
+
+    for (int i = 0; i < 4; i++) {
+        if (edges[i].player_dist > vis_dist) continue;
+
+        /* Brightness increases as player gets closer */
+        float t = 1.0f - (edges[i].player_dist / vis_dist);
+        if (t < 0) t = 0;
+        uint8_t r_val = (uint8_t)(255.0f * t);
+        uint8_t g_val = (uint8_t)(30.0f * t);
+        uint32_t col = 0xFF000000 | (g_val << 8) | r_val;  /* ABGR red */
+
+        /* Thicker line when closer */
+        float w = 0.15f + t * 0.5f;
+
+        float x0 = edges[i].x0, z0 = edges[i].z0;
+        float x1 = edges[i].x1, z1 = edges[i].z1;
+
+        if (x0 == x1) {
+            /* Vertical edge (left or right) */
+            float dx = (x0 < 0) ? w : -w;
+            sr_draw_quad(fb_ptr,
+                sr_vert_c(x0,    y, z0, 0,0, col), sr_vert_c(x0,    y, z1, 0,1, col),
+                sr_vert_c(x0+dx, y, z1, 1,1, col), sr_vert_c(x0+dx, y, z0, 1,0, col),
+                NULL, vp);
+        } else {
+            /* Horizontal edge (top or bottom) */
+            float dz = (z0 < 0) ? w : -w;
+            sr_draw_quad(fb_ptr,
+                sr_vert_c(x0, y, z0,    0,0, col), sr_vert_c(x0, y, z0+dz, 0,1, col),
+                sr_vert_c(x1, y, z0+dz, 1,1, col), sr_vert_c(x1, y, z0,    1,0, col),
+                NULL, vp);
+        }
+    }
 }
 
 /* ── Target drawing & projection ─────────────────────────────────── */
@@ -755,6 +1102,90 @@ static void sfa_draw_target_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
                  gun_col, gun_col, gun_col);
 }
 
+/* ── 4x4 matrix inverse (cofactor expansion) ────────────────────── */
+
+static bool sfa_mat4_invert(const sr_mat4 *m, sr_mat4 *out) {
+    const float *s = &m->m[0][0];
+    float inv[16];
+
+    inv[0]  =  s[5]*s[10]*s[15] - s[5]*s[11]*s[14] - s[9]*s[6]*s[15]
+             + s[9]*s[7]*s[14]  + s[13]*s[6]*s[11]  - s[13]*s[7]*s[10];
+    inv[4]  = -s[4]*s[10]*s[15] + s[4]*s[11]*s[14]  + s[8]*s[6]*s[15]
+             - s[8]*s[7]*s[14]  - s[12]*s[6]*s[11]  + s[12]*s[7]*s[10];
+    inv[8]  =  s[4]*s[9]*s[15]  - s[4]*s[11]*s[13]  - s[8]*s[5]*s[15]
+             + s[8]*s[7]*s[13]  + s[12]*s[5]*s[11]  - s[12]*s[7]*s[9];
+    inv[12] = -s[4]*s[9]*s[14]  + s[4]*s[10]*s[13]  + s[8]*s[5]*s[14]
+             - s[8]*s[6]*s[13]  - s[12]*s[5]*s[10]  + s[12]*s[6]*s[9];
+
+    float det = s[0]*inv[0] + s[1]*inv[4] + s[2]*inv[8] + s[3]*inv[12];
+    if (det > -1e-8f && det < 1e-8f) return false;
+
+    inv[1]  = -s[1]*s[10]*s[15] + s[1]*s[11]*s[14]  + s[9]*s[2]*s[15]
+             - s[9]*s[3]*s[14]  - s[13]*s[2]*s[11]  + s[13]*s[3]*s[10];
+    inv[5]  =  s[0]*s[10]*s[15] - s[0]*s[11]*s[14]  - s[8]*s[2]*s[15]
+             + s[8]*s[3]*s[14]  + s[12]*s[2]*s[11]  - s[12]*s[3]*s[10];
+    inv[9]  = -s[0]*s[9]*s[15]  + s[0]*s[11]*s[13]  + s[8]*s[1]*s[15]
+             - s[8]*s[3]*s[13]  - s[12]*s[1]*s[11]  + s[12]*s[3]*s[9];
+    inv[13] =  s[0]*s[9]*s[14]  - s[0]*s[10]*s[13]  - s[8]*s[1]*s[14]
+             + s[8]*s[2]*s[13]  + s[12]*s[1]*s[10]  - s[12]*s[2]*s[9];
+
+    inv[2]  =  s[1]*s[6]*s[15]  - s[1]*s[7]*s[14]   - s[5]*s[2]*s[15]
+             + s[5]*s[3]*s[14]  + s[13]*s[2]*s[7]    - s[13]*s[3]*s[6];
+    inv[6]  = -s[0]*s[6]*s[15]  + s[0]*s[7]*s[14]    + s[4]*s[2]*s[15]
+             - s[4]*s[3]*s[14]  - s[12]*s[2]*s[7]    + s[12]*s[3]*s[6];
+    inv[10] =  s[0]*s[5]*s[15]  - s[0]*s[7]*s[13]    - s[4]*s[1]*s[15]
+             + s[4]*s[3]*s[13]  + s[12]*s[1]*s[7]    - s[12]*s[3]*s[5];
+    inv[14] = -s[0]*s[5]*s[14]  + s[0]*s[6]*s[13]    + s[4]*s[1]*s[14]
+             - s[4]*s[2]*s[13]  - s[12]*s[1]*s[6]    + s[12]*s[2]*s[5];
+
+    inv[3]  = -s[1]*s[6]*s[11]  + s[1]*s[7]*s[10]    + s[5]*s[2]*s[11]
+             - s[5]*s[3]*s[10]  - s[9]*s[2]*s[7]     + s[9]*s[3]*s[6];
+    inv[7]  =  s[0]*s[6]*s[11]  - s[0]*s[7]*s[10]    - s[4]*s[2]*s[11]
+             + s[4]*s[3]*s[10]  + s[8]*s[2]*s[7]     - s[8]*s[3]*s[6];
+    inv[11] = -s[0]*s[5]*s[11]  + s[0]*s[7]*s[9]     + s[4]*s[1]*s[11]
+             - s[4]*s[3]*s[9]   - s[8]*s[1]*s[7]     + s[8]*s[3]*s[5];
+    inv[15] =  s[0]*s[5]*s[10]  - s[0]*s[6]*s[9]     - s[4]*s[1]*s[10]
+             + s[4]*s[2]*s[9]   + s[8]*s[1]*s[6]     - s[8]*s[2]*s[5];
+
+    float inv_det = 1.0f / det;
+    float *o = &out->m[0][0];
+    for (int i = 0; i < 16; i++) o[i] = inv[i] * inv_det;
+    return true;
+}
+
+/* Unproject a framebuffer pixel to a ray, intersect with Y=0 plane.
+   Returns true if hit, writes world XZ to out_x/out_z. */
+static bool sfa_screen_to_ground(float fb_x, float fb_y, int W, int H,
+                                  const sr_mat4 *inv_vp, sr_vec3 eye,
+                                  float *out_x, float *out_z) {
+    /* NDC coords from framebuffer pixel */
+    float ndc_x = (fb_x / (float)W) * 2.0f - 1.0f;
+    float ndc_y = 1.0f - (fb_y / (float)H) * 2.0f;
+
+    /* Unproject near and far points */
+    sr_vec4 near_clip = { ndc_x, ndc_y, -1.0f, 1.0f };
+    sr_vec4 far_clip  = { ndc_x, ndc_y,  1.0f, 1.0f };
+    sr_vec4 near_w = sr_mat4_mul_v4(*inv_vp, near_clip);
+    sr_vec4 far_w  = sr_mat4_mul_v4(*inv_vp, far_clip);
+
+    if (near_w.w == 0 || far_w.w == 0) return false;
+    float nw = 1.0f / near_w.w, fw = 1.0f / far_w.w;
+    float nx = near_w.x * nw, ny = near_w.y * nw, nz = near_w.z * nw;
+    float ffx = far_w.x * fw,  fy = far_w.y * fw,  fz = far_w.z * fw;
+
+    /* Ray direction */
+    float dx = ffx - nx, dy = fy - ny, dz = fz - nz;
+
+    /* Intersect with Y=0 plane */
+    if (dy > -1e-6f && dy < 1e-6f) return false; /* parallel to plane */
+    float t = -ny / dy;
+    if (t < 0) return false; /* behind camera */
+
+    *out_x = nx + dx * t;
+    *out_z = nz + dz * t;
+    return true;
+}
+
 /* Project a world point to framebuffer coords. Returns false if behind camera. */
 static bool sfa_project_to_screen(const sr_mat4 *vp, float wx, float wy, float wz,
                                     int W, int H, int *out_sx, int *out_sy, float *out_w) {
@@ -772,6 +1203,49 @@ static bool sfa_project_to_screen(const sr_mat4 *vp, float wx, float wy, float w
     *out_sx = (int)((ndc_x * 0.5f + 0.5f) * W);
     *out_sy = (int)((1.0f - (ndc_y * 0.5f + 0.5f)) * H);
     return true;
+}
+
+/* Compute screen-space bracket half-size by projecting ship bounding box corners.
+   Returns the max pixel offset from center in X or Y. */
+static int sfa_ship_screen_extent(const sr_mat4 *vp, float ship_x, float ship_z,
+                                    float heading, int W, int H) {
+    /* Target ship local-space bounding box (from vertex data) */
+    static const float bbox_pts[][3] = {
+        {-1.5f, -0.18f, -0.9f}, { 1.5f, -0.18f, -0.9f},
+        {-1.5f,  0.15f, -0.9f}, { 1.5f,  0.15f, -0.9f},
+        {-1.5f, -0.18f,  1.11f},{ 1.5f, -0.18f,  1.11f},
+        {-1.5f,  0.15f,  1.11f},{ 1.5f,  0.15f,  1.11f},
+    };
+
+    float ch = cosf(-heading), sh = sinf(-heading);
+    int cx, cy;
+    float cw;
+    if (!sfa_project_to_screen(vp, ship_x, 0.0f, ship_z, W, H, &cx, &cy, &cw))
+        return 12;
+
+    int max_off = 0;
+    for (int i = 0; i < 8; i++) {
+        /* Rotate local point by heading, translate to world */
+        float lx = bbox_pts[i][0], ly = bbox_pts[i][1], lz = bbox_pts[i][2];
+        float wx = ship_x + lx * ch - lz * sh;
+        float wz = ship_z + lx * sh + lz * ch;
+        float wy = ly;
+
+        int sx, sy; float sw;
+        if (!sfa_project_to_screen(vp, wx, wy, wz, W, H, &sx, &sy, &sw))
+            continue;
+        int dx = sx - cx, dy = sy - cy;
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        if (dx > max_off) max_off = dx;
+        if (dy > max_off) max_off = dy;
+    }
+
+    /* Add small padding, clamp */
+    max_off += 3;
+    if (max_off < 8) max_off = 8;
+    if (max_off > 80) max_off = 80;
+    return max_off;
 }
 
 /* Draw targeting reticle brackets around a screen point */
@@ -943,12 +1417,9 @@ static void sfa_update_hover(const sr_mat4 *vp, int fb_w, int fb_h) {
         if (!sfa_project_to_screen(vp, npc->x, 0.2f, npc->z, fb_w, fb_h, &scr_x, &scr_y, &scr_w))
             continue;
 
-        /* Compute bracket size — same formula as rendering code */
-        float world_dist = sqrtf((npc->x - sfa.player.x) * (npc->x - sfa.player.x) +
-                                 (npc->z - sfa.player.z) * (npc->z - sfa.player.z));
-        int bracket_half = (int)(600.0f / (world_dist + 5.0f));
-        if (bracket_half < 8) bracket_half = 8;
-        if (bracket_half > 40) bracket_half = 40;
+        /* Compute bracket size from projected ship bounding box */
+        int bracket_half = sfa_ship_screen_extent(vp, npc->x, npc->z,
+                                                    npc->visual_heading, fb_w, fb_h);
 
         /* Check if mouse is inside the bracket area */
         float ddx = sfa.mouse_fb_x - (float)scr_x;
@@ -1196,29 +1667,43 @@ static void sfa_draw_mobile_controls(uint32_t *px, int W, int H, sfa_ship *s) {
         }
     }
 
-    /* Enemy dots on dial — show NPC bearings relative to player */
+    /* Enemy dots on minimap — plot world XZ relative to player, rotated by camera yaw */
     {
-        sfa_ship *player = &sfa.player;
+        float max_range = 60.0f;
+        float map_r = (float)(sr_radius - 4); /* usable pixel radius */
+        float cyaw = sfa.cam_target_yaw;
+        float rc = cosf(cyaw), rs = sinf(cyaw);
         for (int i = 0; i < sfa.npc_count; i++) {
             sfa_ship *npc = &sfa.npcs[i];
-            float dx = npc->x - player->x;
-            float dz = npc->z - player->z;
-            float bearing = atan2f(dx, dz);  /* absolute bearing to target */
-            float dist = sqrtf(dx * dx + dz * dz);
+            if (!npc->alive) continue;
+            float dx = npc->x - sfa.player.x;
+            float dz = npc->z - sfa.player.z;
 
-            /* Map distance to radius on dial (closer = further from center) */
-            float max_range = 60.0f;
-            float t = dist / max_range;
-            if (t > 1.0f) t = 1.0f;
-            float dot_r = 4.0f + t * (sr_radius - 8);
+            /* Rotate by -cam_yaw so "up on minimap = forward on screen" */
+            float rx =  dx * rc + dz * rs;
+            float rz = -dx * rs + dz * rc;
 
-            int ex = scx + (int)(sinf(bearing) * dot_r);
-            int ey = scy - (int)(cosf(bearing) * dot_r);
+            float dist = sqrtf(rx * rx + rz * rz);
 
-            /* Selected target uses bracket color, others use dim red */
+            /* Normalize and clamp to map radius */
+            float mx, my;
+            if (dist < 0.01f) {
+                mx = 0; my = 0;
+            } else if (dist > max_range) {
+                mx = (rx / dist) * map_r;
+                my = (rz / dist) * map_r;
+            } else {
+                float scale = map_r / max_range;
+                mx = rx * scale;
+                my = rz * scale;
+            }
+
+            /* X → screen right, Z → screen up */
+            int ex = scx + (int)mx;
+            int ey = scy - (int)my;
+
             uint32_t dot_col = (i == sfa.selected_npc)
-                ? 0xFFFF6464   /* same as selected bracket: bright cyan-blue */
-                : 0xFF4444CC;  /* dim red */
+                ? 0xFFFF6464 : 0xFF4444CC;
             int dot_size = (i == sfa.selected_npc) ? 3 : 2;
             sfa_draw_circle(px, W, H, ex, ey, dot_size, dot_col);
         }
@@ -1262,6 +1747,100 @@ static void sfa_draw_mobile_controls(uint32_t *px, int W, int H, sfa_ship *s) {
         else snprintf(label, sizeof(label), "%d/4", i);
         sr_draw_text_shadow(px, W, H, bx + 4, by + 5, label, fg, SFA_HUD_SHADOW);
     }
+
+}
+
+/* ── HUD: Weapon bars (bottom-center, combined button + cooldown) ── */
+
+static void sfa_draw_weapon_bars(uint32_t *px, int W, int H, sfa_ship *s) {
+    int bar_h = 20;
+    int gap = 4;
+    int pad = 4; /* horizontal padding inside bar */
+
+    /* Build labels first so we can measure them */
+    char ph_label[20], tp_label[20];
+
+    float ph_pct = 1.0f - (s->phaser_cooldown / SFA_PHASER_COOLDOWN);
+    if (ph_pct > 1.0f) ph_pct = 1.0f;
+    if (ph_pct < 0.0f) ph_pct = 0.0f;
+    bool ph_rdy = ph_pct >= 1.0f;
+
+    if (ph_rdy)
+        snprintf(ph_label, sizeof(ph_label), "PHSR [SPC]");
+    else
+        snprintf(ph_label, sizeof(ph_label), "PHSR %.1f", s->phaser_cooldown);
+
+    float tp_pct = 1.0f - (s->torpedo_cooldown / SFA_TORP_COOLDOWN);
+    if (tp_pct > 1.0f) tp_pct = 1.0f;
+    if (tp_pct < 0.0f) tp_pct = 0.0f;
+    bool tp_rdy = tp_pct >= 1.0f && s->torpedoes_remaining > 0;
+
+    if (s->torpedoes_remaining <= 0)
+        snprintf(tp_label, sizeof(tp_label), "TORP EMPTY");
+    else if (tp_rdy)
+        snprintf(tp_label, sizeof(tp_label), "TORP [F] x%d", s->torpedoes_remaining);
+    else
+        snprintf(tp_label, sizeof(tp_label), "TORP x%d %.1f", s->torpedoes_remaining, s->torpedo_cooldown);
+
+    /* Size bars to fit their text */
+    int ph_w = (int)strlen(ph_label) * 6 + pad * 2;
+    int tp_w = (int)strlen(tp_label) * 6 + pad * 2;
+    int total_w = ph_w + gap + tp_w;
+    int x0 = (W - total_w) / 2;
+    int y = H - bar_h - 4;
+
+    /* ── Phaser bar ── */
+    {
+        int x = x0;
+        int fill = (int)(ph_w * ph_pct);
+        sfa_draw_rect(px, W, H, x, y, x + ph_w, y + bar_h, SFA_HUD_BG);
+        uint32_t fill_col = ph_rdy ? 0xFF44FF44 : 0xFF44AACC;
+        if (fill > 0) sfa_draw_rect(px, W, H, x, y, x + fill, y + bar_h, fill_col);
+        sr_draw_text_shadow(px, W, H, x + pad, y + 6, ph_label,
+                             ph_rdy ? 0xFFFFFFFF : 0xFFCCCCCC, SFA_HUD_SHADOW);
+    }
+
+    /* ── Torpedo bar ── */
+    {
+        int x = x0 + ph_w + gap;
+        int fill = (int)(tp_w * tp_pct);
+        sfa_draw_rect(px, W, H, x, y, x + tp_w, y + bar_h, SFA_HUD_BG);
+        uint32_t fill_col = tp_rdy ? 0xFF4466FF : 0xFF44AACC;
+        if (fill > 0) sfa_draw_rect(px, W, H, x, y, x + fill, y + bar_h, fill_col);
+        sr_draw_text_shadow(px, W, H, x + pad, y + 6, tp_label,
+                             tp_rdy ? 0xFFFFFFFF : 0xFFCCCCCC, SFA_HUD_SHADOW);
+    }
+
+    /* Target status warning (centered above bars) */
+    {
+        const char *warn = NULL;
+        uint32_t warn_col = 0xFF4466FF;
+        if (sfa.selected_npc < 0) {
+            warn = "NO TARGET [TAB]";
+            warn_col = 0xFF6666AA;
+        } else {
+            sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
+            if (!tgt->alive) {
+                warn = "DESTROYED";
+                warn_col = 0xFF4444CC;
+            } else {
+                float dx = tgt->x - s->x;
+                float dz = tgt->z - s->z;
+                float dist = sqrtf(dx * dx + dz * dz);
+                if (dist > SFA_PHASER_RANGE) {
+                    warn = "OUT OF RANGE";
+                } else if (!sfa_in_weapon_arc(s, tgt->x, tgt->z, SFA_PHASER_ARC)) {
+                    warn = "OUT OF ARC";
+                    warn_col = 0xFF44AAFF;
+                }
+            }
+        }
+        if (warn) {
+            int tw = (int)strlen(warn) * 6;
+            sr_draw_text_shadow(px, W, H, (W - tw) / 2, y - 12, warn,
+                                 warn_col, SFA_HUD_SHADOW);
+        }
+    }
 }
 
 /* ── HUD: top bar ────────────────────────────────────────────────── */
@@ -1279,24 +1858,13 @@ static void sfa_draw_hud(sr_framebuffer *fb_ptr, sfa_ship *s) {
     /* Speed indicator (top-left) */
     sfa_draw_speed_hud(px, W, H, s, 3, 3);
 
-    /* Shield + hull (top-right area) */
+    /* Hull indicator (top-right, left of MENU button) */
     {
         char buf[32];
         snprintf(buf, sizeof(buf), "HULL: %d%%", (int)s->hull);
         int tw = (int)strlen(buf) * 6;
-        sr_draw_text_shadow(px, W, H, W - tw - 4, 3, buf,
+        sr_draw_text_shadow(px, W, H, W - tw - 36, 3, buf,
                              s->hull > 50 ? SFA_HUD_BRIGHT : SFA_HUD_WARN, SFA_HUD_SHADOW);
-    }
-
-    /* DEBUG: heading/target degrees */
-    {
-        char dbg[64];
-        int hdeg = (int)(s->heading * 180.0f / SFA_PI);
-        if (hdeg < 0) hdeg += 360;
-        int tdeg = (int)(s->target_heading * 180.0f / SFA_PI);
-        if (tdeg < 0) tdeg += 360;
-        snprintf(dbg, sizeof(dbg), "H:%03d T:%03d", hdeg, tdeg);
-        sr_draw_text_shadow(px, W, H, W / 2 - 36, 16, dbg, 0xFF00FFFF, SFA_HUD_SHADOW);
     }
 
     /* Shield hex display (bottom-left) */
@@ -1304,6 +1872,9 @@ static void sfa_draw_hud(sr_framebuffer *fb_ptr, sfa_ship *s) {
 
     /* Mobile virtual controls */
     sfa_draw_mobile_controls(px, W, H, s);
+
+    /* Weapon bars (bottom-center) */
+    sfa_draw_weapon_bars(px, W, H, s);
 
     /* MENU button (top-right) */
     {
@@ -1327,19 +1898,89 @@ static bool sfa_handle_touch_began(float sx, float sy) {
         return true;
     }
 
-    /* Check steering circle */
-    float sdx = fx - SFA_VCTRL_STEER_CX;
-    float sdy = fy - SFA_VCTRL_STEER_CY;
-    float sdist = sqrtf(sdx * sdx + sdy * sdy);
-    if (sdist < SFA_VCTRL_STEER_R + 15) {
-        sfa.touch_steering = true;
-        sfa.touch_steer_cx = SFA_VCTRL_STEER_CX;
-        sfa.touch_steer_cy = SFA_VCTRL_STEER_CY;
-        if (sdist > 5.0f) {
-            sfa.touch_steer_angle = atan2f(sdx, -sdy);
-            sfa.player.target_heading = sfa.touch_steer_angle;
+    /* Check minimap click — select target by clicking its dot */
+    {
+        int scx = SFA_VCTRL_STEER_CX;
+        int scy = SFA_VCTRL_STEER_CY;
+        int sr = SFA_VCTRL_STEER_R;
+        float mdx = fx - scx, mdy = fy - scy;
+        if (mdx * mdx + mdy * mdy < (float)(sr * sr)) {
+            float max_range = 60.0f;
+            float map_r = (float)(sr - 4);
+            float cyaw = sfa.cam_target_yaw;
+            float rc = cosf(cyaw), rs = sinf(cyaw);
+            int best = -1;
+            float best_d = 10.0f; /* pixel threshold */
+            for (int i = 0; i < sfa.npc_count; i++) {
+                if (!sfa.npcs[i].alive) continue;
+                float ddx = sfa.npcs[i].x - sfa.player.x;
+                float ddz = sfa.npcs[i].z - sfa.player.z;
+                /* Rotate by -cam_yaw to match minimap rendering */
+                float rrx =  ddx * rc + ddz * rs;
+                float rrz = -ddx * rs + ddz * rc;
+                float dist = sqrtf(rrx * rrx + rrz * rrz);
+                float emx, emy;
+                if (dist > max_range) {
+                    emx = (rrx / dist) * map_r;
+                    emy = (rrz / dist) * map_r;
+                } else {
+                    float scale = map_r / max_range;
+                    emx = rrx * scale;
+                    emy = rrz * scale;
+                }
+                int ex = scx + (int)emx;
+                int ey = scy - (int)emy;
+                float pd = sqrtf((fx - ex) * (fx - ex) + (fy - ey) * (fy - ey));
+                if (pd < best_d) { best_d = pd; best = i; }
+            }
+            if (best >= 0) {
+                sfa.selected_npc = (sfa.selected_npc == best) ? -1 : best;
+                return true;
+            }
         }
-        return true;
+    }
+
+    /* Check weapon fire bars first (bottom-center, dynamic sizing) */
+    {
+        int bar_h = 20, gap = 4, pad = 4;
+        char ph_l[20];
+        if (sfa.player.phaser_cooldown <= 0)
+            snprintf(ph_l, sizeof(ph_l), "PHSR [SPC]");
+        else
+            snprintf(ph_l, sizeof(ph_l), "PHSR %.1f", sfa.player.phaser_cooldown);
+        int ph_w = (int)strlen(ph_l) * 6 + pad * 2;
+
+        char tp_l[20];
+        if (sfa.player.torpedoes_remaining <= 0)
+            snprintf(tp_l, sizeof(tp_l), "TORP EMPTY");
+        else if (sfa.player.torpedo_cooldown <= 0)
+            snprintf(tp_l, sizeof(tp_l), "TORP [F] x%d", sfa.player.torpedoes_remaining);
+        else
+            snprintf(tp_l, sizeof(tp_l), "TORP x%d %.1f", sfa.player.torpedoes_remaining, sfa.player.torpedo_cooldown);
+        int tp_w = (int)strlen(tp_l) * 6 + pad * 2;
+
+        int total_w = ph_w + gap + tp_w;
+        int wx0 = (FB_WIDTH - total_w) / 2;
+        int wy = FB_HEIGHT - bar_h - 4;
+
+        /* PHASER bar */
+        if (fx >= wx0 && fx <= wx0 + ph_w && fy >= wy && fy <= wy + bar_h) {
+            if (sfa.selected_npc >= 0 && sfa.selected_npc < sfa.npc_count) {
+                sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
+                if (tgt->alive) sfa_fire_phaser(&sfa.player, tgt, -1, sfa.selected_npc);
+            }
+            return true;
+        }
+        /* TORP bar */
+        int tx = wx0 + ph_w + gap;
+        if (fx >= tx && fx <= tx + tp_w && fy >= wy && fy <= wy + bar_h) {
+            if (sfa.selected_npc >= 0 && sfa.selected_npc < sfa.npc_count) {
+                sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
+                if (tgt->alive)
+                    sfa_fire_torpedo(&sfa.player, tgt, -1, sfa.selected_npc);
+            }
+            return true;
+        }
     }
 
     /* Check throttle buttons */
@@ -1355,22 +1996,45 @@ static bool sfa_handle_touch_began(float sx, float sy) {
         }
     }
 
+    /* Plane-cast steering: click near the ship in 3D to set heading (last) */
+    if (sfa.last_fb_w > 0) {
+        float gx, gz;
+        if (sfa_screen_to_ground(fx, fy, sfa.last_fb_w, sfa.last_fb_h,
+                                  &sfa.last_inv_vp, sfa.last_eye, &gx, &gz)) {
+            float pdx = gx - sfa.player.x;
+            float pdz = gz - sfa.player.z;
+            float pdist = sqrtf(pdx * pdx + pdz * pdz);
+            if (pdist > 1.0f && pdist < SFA_STEER_DISC_R) {
+                sfa.touch_steering = true;
+                float angle = atan2f(-pdx, pdz);
+                sfa.touch_steer_angle = angle;
+                sfa.player.target_heading = angle;
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
 static void sfa_handle_touch_moved(float sx, float sy) {
     if (!sfa.touch_steering) return;
+    if (sfa.last_fb_w <= 0) return;
 
     float fx, fy;
     screen_to_fb(sx, sy, &fx, &fy);
 
-    float sdx = fx - sfa.touch_steer_cx;
-    float sdy = fy - sfa.touch_steer_cy;
-    float sdist = sqrtf(sdx * sdx + sdy * sdy);
-
-    if (sdist > 5.0f) {
-        sfa.touch_steer_angle = atan2f(sdx, -sdy);
-        sfa.player.target_heading = sfa.touch_steer_angle;
+    float gx, gz;
+    if (sfa_screen_to_ground(fx, fy, sfa.last_fb_w, sfa.last_fb_h,
+                              &sfa.last_inv_vp, sfa.last_eye, &gx, &gz)) {
+        float pdx = gx - sfa.player.x;
+        float pdz = gz - sfa.player.z;
+        float pdist = sqrtf(pdx * pdx + pdz * pdz);
+        if (pdist > 1.0f) {
+            float angle = atan2f(-pdx, pdz);
+            sfa.touch_steer_angle = angle;
+            sfa.player.target_heading = angle;
+        }
     }
 }
 
@@ -1390,6 +2054,35 @@ static void sfa_handle_mouse_move(float sx, float sy) {
     /* Update hover using cached VP matrix from last frame */
     if (sfa.last_fb_w > 0)
         sfa_update_hover(&sfa.last_vp, sfa.last_fb_w, sfa.last_fb_h);
+
+    /* Detect weapon bar hover */
+    sfa.hovered_weapon = -1;
+    {
+        int bar_h = 20, gap = 4, pad = 4;
+        char ph_l[20], tp_l[20];
+        if (sfa.player.phaser_cooldown <= 0)
+            snprintf(ph_l, sizeof(ph_l), "PHSR [SPC]");
+        else
+            snprintf(ph_l, sizeof(ph_l), "PHSR %.1f", sfa.player.phaser_cooldown);
+        if (sfa.player.torpedoes_remaining <= 0)
+            snprintf(tp_l, sizeof(tp_l), "TORP EMPTY");
+        else if (sfa.player.torpedo_cooldown <= 0)
+            snprintf(tp_l, sizeof(tp_l), "TORP [F] x%d", sfa.player.torpedoes_remaining);
+        else
+            snprintf(tp_l, sizeof(tp_l), "TORP x%d %.1f", sfa.player.torpedoes_remaining, sfa.player.torpedo_cooldown);
+        int ph_w = (int)strlen(ph_l) * 6 + pad * 2;
+        int tp_w = (int)strlen(tp_l) * 6 + pad * 2;
+        int total_w = ph_w + gap + tp_w;
+        int wx0 = (FB_WIDTH - total_w) / 2;
+        int wy = FB_HEIGHT - bar_h - 4;
+
+        if (fy >= wy && fy <= wy + bar_h) {
+            if (fx >= wx0 && fx <= wx0 + ph_w)
+                sfa.hovered_weapon = 0; /* phaser */
+            else if (fx >= wx0 + ph_w + gap && fx <= wx0 + ph_w + gap + tp_w)
+                sfa.hovered_weapon = 1; /* torpedo */
+        }
+    }
 }
 
 static bool sfa_handle_mouse_click(float sx, float sy) {
@@ -1439,11 +2132,32 @@ static void sfa_handle_key_down(sapp_keycode key) {
                 s->speed_level--;
             break;
         case SAPP_KEYCODE_TAB:
-            /* Cycle through targets */
+            /* Cycle through targets (skip dead NPCs) */
             if (sfa.npc_count > 0) {
-                sfa.selected_npc++;
-                if (sfa.selected_npc >= sfa.npc_count)
-                    sfa.selected_npc = -1;  /* deselect after last */
+                int start = sfa.selected_npc;
+                do {
+                    sfa.selected_npc++;
+                    if (sfa.selected_npc >= sfa.npc_count) {
+                        sfa.selected_npc = -1;
+                        break;
+                    }
+                } while (!sfa.npcs[sfa.selected_npc].alive &&
+                         sfa.selected_npc != start);
+            }
+            break;
+        case SAPP_KEYCODE_SPACE:
+            /* Fire phasers at selected target */
+            if (sfa.selected_npc >= 0 && sfa.selected_npc < sfa.npc_count) {
+                sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
+                if (tgt->alive) sfa_fire_phaser(s, tgt, -1, sfa.selected_npc);
+            }
+            break;
+        case SAPP_KEYCODE_F:
+            /* Fire torpedo at selected target */
+            if (sfa.selected_npc >= 0 && sfa.selected_npc < sfa.npc_count) {
+                sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
+                if (tgt->alive)
+                    sfa_fire_torpedo(s, tgt, -1, sfa.selected_npc);
             }
             break;
         default:
@@ -1505,8 +2219,10 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
     int W = fb_ptr->width, H = fb_ptr->height;
     uint32_t *px = fb_ptr->color;
 
-    /* Cache VP matrix for input-time hover detection */
+    /* Cache VP matrix + inverse for input-time hover and plane casting */
     sfa.last_vp = vp;
+    sfa_mat4_invert(&vp, &sfa.last_inv_vp);
+    sfa.last_eye = eye;
     sfa.last_fb_w = W;
     sfa.last_fb_h = H;
 
@@ -1515,10 +2231,77 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
 
     /* Draw world */
     sfa_draw_starfield(fb_ptr, &vp, s->x, s->z);
-    sfa_draw_arena_boundary(fb_ptr, &vp);
+    sfa_draw_arena_boundary(fb_ptr, &vp, s->x, s->z);
 
     /* Draw player ship */
     sfa_draw_ship(fb_ptr, &vp, s);
+
+    /* ── 3D Steering disc around player ship ── */
+    {
+        float disc_r = SFA_STEER_DISC_R;
+        float disc_y = 0.05f;     /* just above ground */
+        int segments = 32;
+        uint32_t ring_col = 0x80888888; /* dim gray ring */
+
+        /* Draw disc ring as 2D projected lines */
+        for (int i = 0; i < segments; i++) {
+            float a0 = (float)i / segments * SFA_TWO_PI;
+            float a1 = (float)(i + 1) / segments * SFA_TWO_PI;
+
+            float wx0 = s->x + cosf(a0) * disc_r;
+            float wz0 = s->z + sinf(a0) * disc_r;
+            float wx1 = s->x + cosf(a1) * disc_r;
+            float wz1 = s->z + sinf(a1) * disc_r;
+
+            /* Dithered: skip every other segment */
+            if (i & 1) continue;
+
+            int sx0, sy0, sx1, sy1;
+            float sw0, sw1;
+            if (!sfa_project_to_screen(&vp, wx0, disc_y, wz0, W, H, &sx0, &sy0, &sw0)) continue;
+            if (!sfa_project_to_screen(&vp, wx1, disc_y, wz1, W, H, &sx1, &sy1, &sw1)) continue;
+
+            int ldx = sx1 - sx0, ldy = sy1 - sy0;
+            int steps = (ldx < 0 ? -ldx : ldx) > (ldy < 0 ? -ldy : ldy)
+                      ? (ldx < 0 ? -ldx : ldx) : (ldy < 0 ? -ldy : ldy);
+            if (steps < 1) steps = 1;
+            for (int j = 0; j <= steps; j++) {
+                int lx = sx0 + ldx * j / steps;
+                int ly = sy0 + ldy * j / steps;
+                if (lx >= 0 && lx < W && ly >= 0 && ly < H)
+                    px[ly * W + lx] = ring_col;
+            }
+        }
+
+        /* Target heading indicator on disc — 2D projected line */
+        {
+            float angle_diff = sfa_normalize_angle(s->target_heading - s->heading);
+            if (angle_diff > 0.01f || angle_diff < -0.01f) {
+                float th = s->target_heading;
+                float tx = s->x - sinf(th) * disc_r;
+                float tz = s->z + cosf(th) * disc_r;
+                uint32_t tgt_col = 0xFF00AAFF; /* orange */
+
+                int sx0, sy0, sx1, sy1;
+                float sw0, sw1;
+                if (sfa_project_to_screen(&vp, s->x, 0.3f, s->z, W, H, &sx0, &sy0, &sw0) &&
+                    sfa_project_to_screen(&vp, tx, 0.3f, tz, W, H, &sx1, &sy1, &sw1)) {
+                    int ldx = sx1 - sx0, ldy = sy1 - sy0;
+                    int steps = (ldx < 0 ? -ldx : ldx) > (ldy < 0 ? -ldy : ldy)
+                              ? (ldx < 0 ? -ldx : ldx) : (ldy < 0 ? -ldy : ldy);
+                    if (steps < 1) steps = 1;
+                    for (int j = 0; j <= steps; j++) {
+                        int lx = sx0 + ldx * j / steps;
+                        int ly = sy0 + ldy * j / steps;
+                        if (lx >= 0 && lx < W && ly >= 0 && ly < H)
+                            px[ly * W + lx] = tgt_col;
+                    }
+                    /* Endpoint dot */
+                    sfa_draw_circle(px, W, H, sx1, sy1, 2, tgt_col);
+                }
+            }
+        }
+    }
 
     /* 3D North arrow — yellow line from ship extending in +Z (heading 0) */
     {
@@ -1542,10 +2325,117 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
             NULL, &vp);
     }
 
-    /* Draw NPC ships (all Klingon Bird of Prey) */
-    for (int i = 0; i < sfa.npc_count; i++)
+    /* Draw NPC ships (skip dead) */
+    for (int i = 0; i < sfa.npc_count; i++) {
+        if (!sfa.npcs[i].alive) continue;
         sfa_draw_target_ship(fb_ptr, &vp, sfa.npcs[i].x, sfa.npcs[i].z,
                              sfa.npcs[i].visual_heading);
+    }
+
+    /* Draw phaser beams (2D dithered lines projected to screen) */
+    for (int bi = 0; bi < SFA_MAX_BEAMS; bi++) {
+        sfa_beam *b = &sfa.beams[bi];
+        if (!b->active) continue;
+
+        /* Project both endpoints to screen */
+        int sx0, sy0, sx1, sy1;
+        float sw0, sw1;
+        if (!sfa_project_to_screen(&vp, b->x0, 0.3f, b->z0, W, H, &sx0, &sy0, &sw0))
+            continue;
+        if (!sfa_project_to_screen(&vp, b->x1, 0.3f, b->z1, W, H, &sx1, &sy1, &sw1))
+            continue;
+
+        /* Bresenham-style line with dither */
+        int dx = sx1 - sx0;
+        int dy = sy1 - sy0;
+        int adx = dx < 0 ? -dx : dx;
+        int ady = dy < 0 ? -dy : dy;
+        int steps = adx > ady ? adx : ady;
+        if (steps < 1) steps = 1;
+
+        /* Fade factor based on remaining time */
+        float fade = b->timer / SFA_PHASER_BEAM_TIME;
+
+        for (int j = 0; j <= steps; j++) {
+            int lx = sx0 + dx * j / steps;
+            int ly = sy0 + dy * j / steps;
+
+            /* 2x2 Bayer dither pattern for beam thickness + fade */
+            for (int oy = -1; oy <= 1; oy++) {
+                for (int ox = -1; ox <= 1; ox++) {
+                    int px2 = lx + ox;
+                    int py2 = ly + oy;
+                    if (px2 < 0 || px2 >= W || py2 < 0 || py2 >= H) continue;
+                    /* Dither: checkerboard thins the beam, fades over time */
+                    int dist = ox * ox + oy * oy;
+                    float threshold = (float)dist * 0.3f + (1.0f - fade) * 1.5f;
+                    if (((px2 + py2) & 1) && threshold > 0.8f) continue;
+                    if (dist > 1 && threshold > 0.5f) continue;
+                    px[py2 * W + px2] = b->color;
+                }
+            }
+        }
+    }
+
+    /* Draw torpedoes (2D projected spike starburst — Star Trek style) */
+    for (int i = 0; i < SFA_MAX_TORPS; i++) {
+        sfa_torpedo *tp = &sfa.torpedoes[i];
+        if (!tp->active) continue;
+
+        int tx, ty; float tw;
+        if (!sfa_project_to_screen(&vp, tp->x, 0.3f, tp->z, W, H, &tx, &ty, &tw))
+            continue;
+
+        /* Pulsing size based on time */
+        float pulse = 1.0f + 0.3f * sinf(tp->timer * 15.0f);
+        int core_r = (int)(2.0f * pulse);
+        int spike_len = (int)(7.0f * pulse);
+
+        /* Core glow — bright center dot */
+        sfa_draw_circle(px, W, H, tx, ty, core_r, 0xFFFFFFFF);
+
+        /* Decompose torpedo color for dimmer spike tips */
+        uint32_t col = tp->color;
+        uint8_t cr = col & 0xFF, cg = (col >> 8) & 0xFF, cb = (col >> 16) & 0xFF;
+        uint32_t dim_col = 0xFF000000 | ((cb/2) << 16) | ((cg/2) << 8) | (cr/2);
+
+        /* 6 spikes at 60-degree intervals (lens flare / starburst) */
+        for (int s = 0; s < 6; s++) {
+            float ang = s * (SFA_PI / 3.0f) + tp->timer * 2.0f; /* slow rotation */
+            float cs = cosf(ang), sn = sinf(ang);
+            int sx1 = tx + (int)(spike_len * cs);
+            int sy1 = ty + (int)(spike_len * sn);
+
+            /* Draw spike line with dithered fade */
+            int sdx = sx1 - tx, sdy = sy1 - ty;
+            int steps = (sdx < 0 ? -sdx : sdx) > (sdy < 0 ? -sdy : sdy)
+                      ? (sdx < 0 ? -sdx : sdx) : (sdy < 0 ? -sdy : sdy);
+            if (steps < 1) steps = 1;
+            for (int j = 0; j <= steps; j++) {
+                int lx = tx + sdx * j / steps;
+                int ly = ty + sdy * j / steps;
+                if (lx < 0 || lx >= W || ly < 0 || ly >= H) continue;
+                /* Dither: skip every other pixel near the tip */
+                float t = (float)j / (float)steps;
+                if (t > 0.5f && ((lx + ly) & 1)) continue;
+                px[ly * W + lx] = (t < 0.4f) ? col : dim_col;
+            }
+        }
+    }
+
+    /* Draw explosions (2D circles projected to screen) */
+    for (int i = 0; i < SFA_MAX_EXPLOSIONS; i++) {
+        sfa_explosion *e = &sfa.explosions[i];
+        if (!e->active) continue;
+
+        int ex, ey; float ew;
+        if (!sfa_project_to_screen(&vp, e->x, 0.3f, e->z, W, H, &ex, &ey, &ew))
+            continue;
+
+        float t = 1.0f - (e->timer / e->max_timer);
+        int radius = 2 + (int)(t * 8.0f);
+        sfa_draw_circle(px, W, H, ex, ey, radius, e->color);
+    }
 
     /* Draw targeting brackets on NPC ships */
     {
@@ -1556,39 +2446,134 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
             if (!sfa_project_to_screen(&vp, npc->x, 0.2f, npc->z, W, H, &scr_x, &scr_y, &scr_w))
                 continue;
 
-            /* Bracket size based on distance */
             float ddx = npc->x - s->x;
             float ddz = npc->z - s->z;
             float dist = sqrtf(ddx*ddx + ddz*ddz);
-            int bracket_half = (int)(600.0f / (dist + 5.0f));
-            if (bracket_half < 8) bracket_half = 8;
-            if (bracket_half > 40) bracket_half = 40;
+            int bracket_half = sfa_ship_screen_extent(&vp, npc->x, npc->z,
+                                                        npc->visual_heading, W, H);
+
+            if (!npc->alive) {
+                /* Dead: show dim X marker */
+                sr_draw_text_shadow(px, W, H, scr_x - 3, scr_y - 4,
+                                     "X", 0xFF444444, SFA_HUD_SHADOW);
+                continue;
+            }
+
+            /* Health bar above brackets — shows total integrity (shields + hull) */
+            {
+                int hbar_w = bracket_half * 2;
+                int hbar_h = 2;
+                int hx = scr_x - bracket_half;
+                int hy = scr_y - bracket_half - 5;
+                /* Total: 6 shields * 100 + 100 hull = 700 max */
+                float total_hp = npc->hull;
+                for (int si = 0; si < 6; si++) total_hp += npc->shields[si];
+                float hp_pct = total_hp / 700.0f;
+                if (hp_pct < 0) hp_pct = 0;
+                if (hp_pct > 1) hp_pct = 1;
+                int fill = (int)(hbar_w * hp_pct);
+                uint32_t hp_col = hp_pct > 0.6f ? 0xFF44CC44
+                                : hp_pct > 0.3f ? 0xFF44CCCC
+                                :                  0xFF4444CC;
+                sfa_draw_rect(px, W, H, hx, hy, hx + hbar_w, hy + hbar_h, 0xC0000000);
+                if (fill > 0)
+                    sfa_draw_rect(px, W, H, hx, hy, hx + fill, hy + hbar_h, hp_col);
+            }
 
             uint32_t bracket_col;
             if (i == sfa.selected_npc) {
-                /* Selected: solid bright blue */
-                bracket_col = 0xFFFF6464;  /* ABGR: bright cyan-blue */
-                /* Draw double brackets for selected */
+                bracket_col = 0xFFFF6464;
                 sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half + 2, bracket_col);
                 sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half, bracket_col);
 
-                /* Target info text */
                 char tbuf[32];
                 snprintf(tbuf, sizeof(tbuf), "TGT: %.0fm", dist);
                 sr_draw_text_shadow(px, W, H, scr_x - 18, scr_y + bracket_half + 4,
-                                     tbuf, SFA_TARGET_SELECTED, SFA_HUD_SHADOW);
+                                     tbuf, bracket_col, SFA_HUD_SHADOW);
             } else if (i == sfa.hovered_npc) {
-                /* Hovered: highlighted brackets */
-                bracket_col = 0xFFFFEE88;  /* bright warm white */
+                bracket_col = 0xFFFFEE88;
                 sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half, bracket_col);
-
-                /* Hover hint */
                 sr_draw_text_shadow(px, W, H, scr_x - 12, scr_y + bracket_half + 4,
                                      "CLICK", 0xFFCCCCCC, SFA_HUD_SHADOW);
             } else {
-                /* Default: dim brackets */
                 bracket_col = 0xFF555555;
                 sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half, bracket_col);
+            }
+        }
+    }
+
+    /* Draw weapon firing arc when hovering over weapon bar */
+    if (sfa.hovered_weapon >= 0) {
+        float arc_half = (sfa.hovered_weapon == 0) ? SFA_PHASER_ARC : SFA_TORP_ARC;
+        float arc_range = (sfa.hovered_weapon == 0) ? SFA_PHASER_RANGE : SFA_TORP_RANGE;
+        float arc_vis_r = arc_range * 0.4f; /* visual radius on ground */
+        int arc_steps = 24;
+
+        /* Color: green=ready, yellow=charging but in arc/range, red=can't */
+        int arc_state = 0; /* 0=red, 1=yellow, 2=green */
+        if (sfa.selected_npc >= 0 && sfa.selected_npc < sfa.npc_count) {
+            sfa_ship *tgt = &sfa.npcs[sfa.selected_npc];
+            if (tgt->alive) {
+                float tdx = tgt->x - s->x, tdz = tgt->z - s->z;
+                float tdist = sqrtf(tdx * tdx + tdz * tdz);
+                bool in_range = tdist <= arc_range;
+                bool in_arc = sfa_in_weapon_arc(s, tgt->x, tgt->z, arc_half);
+                bool ready = (sfa.hovered_weapon == 0)
+                    ? s->phaser_cooldown <= 0
+                    : (s->torpedo_cooldown <= 0 && s->torpedoes_remaining > 0);
+                if (in_range && in_arc) {
+                    arc_state = ready ? 2 : 1;
+                }
+            }
+        }
+        uint32_t arc_col = arc_state == 2 ? 0xFF44FF44   /* green */
+                         : arc_state == 1 ? 0xFF44CCCC   /* yellow */
+                         :                  0xFF4444CC;   /* red */
+
+        /* Draw arc edges (two lines from ship to arc boundary) */
+        for (int side = -1; side <= 1; side += 2) {
+            float edge_ang = s->heading + arc_half * side;
+            float ex = s->x - sinf(edge_ang) * arc_vis_r;
+            float ez = s->z + cosf(edge_ang) * arc_vis_r;
+            int sx0, sy0, sx1, sy1; float sw0, sw1;
+            if (sfa_project_to_screen(&vp, s->x, 0.3f, s->z, W, H, &sx0, &sy0, &sw0) &&
+                sfa_project_to_screen(&vp, ex, 0.3f, ez, W, H, &sx1, &sy1, &sw1)) {
+                int ldx = sx1 - sx0, ldy = sy1 - sy0;
+                int steps = (ldx<0?-ldx:ldx) > (ldy<0?-ldy:ldy) ? (ldx<0?-ldx:ldx) : (ldy<0?-ldy:ldy);
+                if (steps < 1) steps = 1;
+                for (int j = 0; j <= steps; j++) {
+                    int lx = sx0 + ldx * j / steps;
+                    int ly = sy0 + ldy * j / steps;
+                    if (lx >= 0 && lx < W && ly >= 0 && ly < H) {
+                        if ((lx + ly) & 1) continue; /* dither */
+                        px[ly * W + lx] = arc_col;
+                    }
+                }
+            }
+        }
+
+        /* Draw arc curve between the two edges */
+        float a_start = s->heading - arc_half;
+        for (int i = 0; i < arc_steps; i++) {
+            float a0 = a_start + (2.0f * arc_half) * (float)i / arc_steps;
+            float a1 = a_start + (2.0f * arc_half) * (float)(i + 1) / arc_steps;
+            float wx0 = s->x - sinf(a0) * arc_vis_r;
+            float wz0 = s->z + cosf(a0) * arc_vis_r;
+            float wx1 = s->x - sinf(a1) * arc_vis_r;
+            float wz1 = s->z + cosf(a1) * arc_vis_r;
+            int sx0, sy0, sx1, sy1; float sw0, sw1;
+            if (!sfa_project_to_screen(&vp, wx0, 0.3f, wz0, W, H, &sx0, &sy0, &sw0)) continue;
+            if (!sfa_project_to_screen(&vp, wx1, 0.3f, wz1, W, H, &sx1, &sy1, &sw1)) continue;
+            int ldx = sx1 - sx0, ldy = sy1 - sy0;
+            int steps = (ldx<0?-ldx:ldx) > (ldy<0?-ldy:ldy) ? (ldx<0?-ldx:ldx) : (ldy<0?-ldy:ldy);
+            if (steps < 1) steps = 1;
+            for (int j = 0; j <= steps; j++) {
+                int lx = sx0 + ldx * j / steps;
+                int ly = sy0 + ldy * j / steps;
+                if (lx >= 0 && lx < W && ly >= 0 && ly < H) {
+                    if ((lx + ly) & 1) continue;
+                    px[ly * W + lx] = arc_col;
+                }
             }
         }
     }
