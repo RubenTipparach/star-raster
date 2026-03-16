@@ -1,4 +1,5 @@
-build/
+build/*
+!build/web/
 third_party/
 *.exe
 *.o
