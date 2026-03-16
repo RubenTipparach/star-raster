@@ -197,8 +197,8 @@ static void init(void) {
     });
 
     fb_sampler = sg_make_sampler(&(sg_sampler_desc){
-        .min_filter = SG_FILTER_NEAREST,
-        .mag_filter = SG_FILTER_NEAREST,
+        .min_filter = SG_FILTER_LINEAR,
+        .mag_filter = SG_FILTER_LINEAR,
     });
 
     float verts[] = {
@@ -818,6 +818,7 @@ sapp_desc sokol_main(int argc, char *argv[]) {
         .width      = FB_WIDTH * 2,
         .height     = FB_HEIGHT * 2,
         .window_title = "StarRaster",
+        .high_dpi     = true,
         .logger.func  = slog_func,
         .swap_interval = 0,
     };
