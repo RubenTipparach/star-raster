@@ -43,9 +43,58 @@ static void sfa_draw_box(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
         NULL, mvp);
 }
 
+/* ── Parameterized Federation ship model ─────────────────────────── */
+/* Builds a Federation-style ship with configurable proportions.     */
+typedef struct {
+    float saucer_r;       /* saucer disc radius */
+    float saucer_h;       /* saucer half-height */
+    float saucer_y;       /* saucer Y center */
+    float saucer_z;       /* saucer Z center (forward) */
+    float eng_hw;         /* engineering hull half-width */
+    float eng_hh;         /* engineering hull half-height */
+    float eng_z0;         /* engineering hull aft Z */
+    float eng_z1;         /* engineering hull fore Z */
+    float nacelle_x;      /* nacelle X offset from center */
+    float nacelle_y;      /* nacelle Y center */
+    float nacelle_hw;     /* nacelle half-width */
+    float nacelle_hh;     /* nacelle half-height */
+    float nacelle_z0;     /* nacelle aft Z */
+    float nacelle_z1;     /* nacelle fore Z */
+    float pylon_top_y;    /* pylon top Y (connects to nacelle) */
+    float bridge_r;       /* bridge dome half-extent */
+    float bridge_h;       /* bridge dome height */
+    bool  has_secondary;  /* battlecruiser: extra secondary hull */
+} fed_ship_params;
+
+static const fed_ship_params fed_params[] = {
+    /* FRIGATE — small, compact, tight nacelles */
+    { 0.55f, 0.08f, 0.12f, 0.4f,
+      0.15f, 0.12f, -0.8f, 0.15f,
+      0.50f, 0.28f, 0.08f, 0.07f, -0.75f, -0.05f,
+      0.25f, 0.10f, 0.08f, false },
+    /* DESTROYER — medium, angular */
+    { 0.70f, 0.10f, 0.14f, 0.5f,
+      0.20f, 0.16f, -1.1f, 0.22f,
+      0.68f, 0.34f, 0.10f, 0.08f, -1.0f, -0.02f,
+      0.30f, 0.12f, 0.10f, false },
+    /* CRUISER — the original model */
+    { 0.90f, 0.12f, 0.15f, 0.6f,
+      0.25f, 0.20f, -1.4f, 0.30f,
+      0.85f, 0.40f, 0.12f, 0.10f, -1.3f, 0.0f,
+      0.35f, 0.15f, 0.12f, false },
+    /* BATTLECRUISER — massive, extra hull section */
+    { 1.15f, 0.14f, 0.18f, 0.7f,
+      0.32f, 0.25f, -1.8f, 0.35f,
+      1.05f, 0.48f, 0.14f, 0.12f, -1.7f, 0.1f,
+      0.42f, 0.18f, 0.14f, true },
+};
+
 static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
                            sfa_ship *s) {
     float h = s->visual_heading;
+    int cls = s->ship_class;
+    if (cls < 0 || cls >= SHIP_CLASS_COUNT) cls = SHIP_CLASS_CRUISER;
+    const fed_ship_params *p = &fed_params[cls];
 
     sr_mat4 model = sr_mat4_mul(
         sr_mat4_translate(s->x, 0.0f, s->z),
@@ -69,16 +118,16 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
     uint32_t nacelle_b = 0xFF000000 | ((uint32_t)(nb/2)<<16) | ((uint32_t)(ng/2)<<8) | (nr/2);
     uint32_t pylon_col  = 0xFF887755;
     uint32_t bridge_col = 0xFFFFDDAA;
-    uint32_t deflector  = 0xFFFFAA33;  /* blue-ish glow (ABGR) */
+    uint32_t deflector  = 0xFFFFAA33;
 
-    /* ── Saucer section (front disc approximated as octagonal prism) ── */
+    /* ── Saucer section (octagonal prism) ── */
     {
-        float sr = 0.9f;    /* saucer radius */
-        float sh = 0.12f;   /* saucer half-height */
-        float sy = 0.15f;   /* saucer Y center */
-        float sz = 0.6f;    /* saucer Z center (forward) */
+        float sr = p->saucer_r;
+        float sh = p->saucer_h;
+        float sy = p->saucer_y;
+        float sz = p->saucer_z;
         int n = 8;
-        float angles[9]; /* n+1 for closing */
+        float angles[9];
         for (int i = 0; i <= n; i++)
             angles[i] = SFA_TWO_PI * (float)i / (float)n;
 
@@ -88,19 +137,16 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
             float x0 = s0 * sr, z0 = c0 * sr + sz;
             float x1 = s1 * sr, z1 = c1 * sr + sz;
 
-            /* Top face wedge */
             sr_draw_triangle(fb_ptr,
                 sr_vert_c(0, sy + sh, sz, 0.5f, 0.5f, hull_top),
                 sr_vert_c(x1, sy + sh, z1, 1, 0, hull_top),
                 sr_vert_c(x0, sy + sh, z0, 0, 0, hull_top),
                 NULL, &mvp);
-            /* Bottom face wedge */
             sr_draw_triangle(fb_ptr,
                 sr_vert_c(0, sy - sh, sz, 0.5f, 0.5f, hull_bot),
                 sr_vert_c(x0, sy - sh, z0, 0, 0, hull_bot),
                 sr_vert_c(x1, sy - sh, z1, 1, 0, hull_bot),
                 NULL, &mvp);
-            /* Side rim */
             sr_draw_quad(fb_ptr,
                 sr_vert_c(x0, sy - sh, z0, 0, 0, hull_side),
                 sr_vert_c(x1, sy - sh, z1, 1, 0, hull_side),
@@ -109,27 +155,25 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
                 NULL, &mvp);
         }
 
-        /* Bridge dome (small raised box on top of saucer) */
+        /* Bridge dome */
         sfa_draw_box(fb_ptr, &mvp,
-                     -0.15f, sy + sh, sz - 0.15f,
-                      0.15f, sy + sh + 0.12f, sz + 0.15f,
+                     -p->bridge_r, sy + sh, sz - p->bridge_r,
+                      p->bridge_r, sy + sh + p->bridge_h, sz + p->bridge_r,
                      bridge_col, bridge_col, hull_top);
     }
 
-    /* ── Engineering hull (rear section — elongated box) ── */
+    /* ── Engineering hull ── */
     {
-        float ew = 0.25f;  /* half-width */
-        float eh = 0.2f;   /* half-height */
-        float ey = 0.0f;   /* Y center */
-        float ez0 = -1.4f; /* aft end */
-        float ez1 = 0.3f;  /* connects to saucer */
+        float ew = p->eng_hw, eh = p->eng_hh;
+        float ey = 0.0f;
+        float ez0 = p->eng_z0, ez1 = p->eng_z1;
 
         sfa_draw_box(fb_ptr, &mvp,
                      -ew, ey - eh, ez0,
                       ew, ey + eh, ez1,
                      hull_top, hull_side, hull_bot);
 
-        /* Deflector dish (front face of engineering hull) */
+        /* Deflector dish */
         sr_draw_quad(fb_ptr,
             sr_vert_c(-ew*0.6f, ey - eh*0.6f, ez1 + 0.01f, 0,0, deflector),
             sr_vert_c(-ew*0.6f, ey + eh*0.6f, ez1 + 0.01f, 0,1, deflector),
@@ -138,62 +182,72 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
             NULL, &mvp);
     }
 
-    /* ── Nacelle pylons (diagonal struts from engineering to nacelles) ── */
+    /* ── Battlecruiser secondary hull (below engineering) ── */
+    if (p->has_secondary) {
+        float sw = p->eng_hw * 0.7f;
+        float sh2 = p->eng_hh * 0.5f;
+        float sy = -p->eng_hh - sh2;
+        sfa_draw_box(fb_ptr, &mvp,
+                     -sw, sy - sh2, p->eng_z0 * 0.7f,
+                      sw, sy + sh2, p->eng_z1 * 0.5f,
+                     hull_side, hull_bot, hull_bot);
+    }
+
+    /* ── Nacelle pylons ── */
     {
-        float pw = 0.06f;  /* pylon thickness */
+        float pw = 0.06f;
+        float nx = p->nacelle_x;
+        float py = p->pylon_top_y;
+        float pz0 = (p->nacelle_z0 + p->nacelle_z1) * 0.4f;
+        float pz1 = pz0 - 0.3f;
+
         /* Left pylon */
         sr_draw_quad(fb_ptr,
-            sr_vert_c(-0.25f, 0.0f,  -0.4f, 0,0, pylon_col),
-            sr_vert_c(-0.25f, 0.0f,  -0.7f, 0,1, pylon_col),
-            sr_vert_c(-0.85f, 0.35f, -0.7f, 1,1, pylon_col),
-            sr_vert_c(-0.85f, 0.35f, -0.4f, 1,0, pylon_col),
+            sr_vert_c(-p->eng_hw, 0.0f, pz0, 0,0, pylon_col),
+            sr_vert_c(-p->eng_hw, 0.0f, pz1, 0,1, pylon_col),
+            sr_vert_c(-nx, py, pz1, 1,1, pylon_col),
+            sr_vert_c(-nx, py, pz0, 1,0, pylon_col),
             NULL, &mvp);
-        /* Pylon thickness (top face) */
         sr_draw_quad(fb_ptr,
-            sr_vert_c(-0.25f,      pw, -0.4f, 0,0, pylon_col),
-            sr_vert_c(-0.85f, 0.35f+pw, -0.4f, 0,1, pylon_col),
-            sr_vert_c(-0.85f, 0.35f+pw, -0.7f, 1,1, pylon_col),
-            sr_vert_c(-0.25f,      pw, -0.7f, 1,0, pylon_col),
+            sr_vert_c(-p->eng_hw, pw, pz0, 0,0, pylon_col),
+            sr_vert_c(-nx, py+pw, pz0, 0,1, pylon_col),
+            sr_vert_c(-nx, py+pw, pz1, 1,1, pylon_col),
+            sr_vert_c(-p->eng_hw, pw, pz1, 1,0, pylon_col),
             NULL, &mvp);
 
-        /* Right pylon (mirror) */
+        /* Right pylon */
         sr_draw_quad(fb_ptr,
-            sr_vert_c(0.25f, 0.0f,  -0.7f, 0,0, pylon_col),
-            sr_vert_c(0.25f, 0.0f,  -0.4f, 0,1, pylon_col),
-            sr_vert_c(0.85f, 0.35f, -0.4f, 1,1, pylon_col),
-            sr_vert_c(0.85f, 0.35f, -0.7f, 1,0, pylon_col),
+            sr_vert_c(p->eng_hw, 0.0f, pz1, 0,0, pylon_col),
+            sr_vert_c(p->eng_hw, 0.0f, pz0, 0,1, pylon_col),
+            sr_vert_c(nx, py, pz0, 1,1, pylon_col),
+            sr_vert_c(nx, py, pz1, 1,0, pylon_col),
             NULL, &mvp);
         sr_draw_quad(fb_ptr,
-            sr_vert_c(0.25f,      pw, -0.7f, 0,0, pylon_col),
-            sr_vert_c(0.85f, 0.35f+pw, -0.7f, 0,1, pylon_col),
-            sr_vert_c(0.85f, 0.35f+pw, -0.4f, 1,1, pylon_col),
-            sr_vert_c(0.25f,      pw, -0.4f, 1,0, pylon_col),
+            sr_vert_c(p->eng_hw, pw, pz1, 0,0, pylon_col),
+            sr_vert_c(nx, py+pw, pz1, 0,1, pylon_col),
+            sr_vert_c(nx, py+pw, pz0, 1,1, pylon_col),
+            sr_vert_c(p->eng_hw, pw, pz0, 1,0, pylon_col),
             NULL, &mvp);
     }
 
-    /* ── Nacelles (elongated boxes, raised on pylons) ── */
+    /* ── Nacelles ── */
     {
-        float nw = 0.12f;  /* nacelle half-width */
-        float nh = 0.1f;   /* nacelle half-height */
-        float ny = 0.4f;   /* nacelle Y center */
-        float nz0 = -1.3f; /* aft */
-        float nz1 = 0.0f;  /* fore */
-        float nx = 0.85f;  /* X offset from center */
+        float nw = p->nacelle_hw, nh = p->nacelle_hh;
+        float ny = p->nacelle_y;
+        float nz0 = p->nacelle_z0, nz1 = p->nacelle_z1;
+        float nx = p->nacelle_x;
 
-        /* Left nacelle */
         sfa_draw_box(fb_ptr, &mvp,
                      -nx - nw, ny - nh, nz0,
                      -nx + nw, ny + nh, nz1,
                      nacelle_t, nacelle_s, nacelle_b);
-
-        /* Right nacelle */
         sfa_draw_box(fb_ptr, &mvp,
                       nx - nw, ny - nh, nz0,
                       nx + nw, ny + nh, nz1,
                      nacelle_t, nacelle_s, nacelle_b);
 
-        /* Bussard collectors (front caps — red glow) */
-        uint32_t bussard = 0xFF2222FF;  /* red in ABGR */
+        /* Bussard collectors */
+        uint32_t bussard = 0xFF2222FF;
         sr_draw_quad(fb_ptr,
             sr_vert_c(-nx-nw, ny-nh, nz1+0.01f, 0,0, bussard),
             sr_vert_c(-nx-nw, ny+nh, nz1+0.01f, 0,1, bussard),
@@ -208,7 +262,7 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
             NULL, &mvp);
     }
 
-    /* ── Engine glow (exhaust from nacelle rears) ── */
+    /* ── Engine glow ── */
     if (s->current_speed > 0.1f) {
         float speed_frac = s->current_speed / sfa_speed_values[SFA_NUM_SPEEDS - 1];
         float glow_len = 0.4f + 0.9f * speed_frac;
@@ -217,39 +271,40 @@ static void sfa_draw_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
         uint8_t gg = (uint8_t)(100.0f * pulse);
         uint32_t glow_col = 0xFF000000 | (uint32_t)(0x22) << 16 | (uint32_t)gg << 8 | gr;
 
-        float nx = 0.85f;
-        float ny = 0.4f;
-        float nz0 = -1.3f;
+        float nx = p->nacelle_x;
+        float ny = p->nacelle_y;
+        float nz0 = p->nacelle_z0;
+        float gw = p->nacelle_hw * 0.5f;
 
         /* Left nacelle exhaust */
         sr_draw_triangle(fb_ptr,
-            sr_vert_c(-nx, ny + 0.05f, nz0,             0.5f, 0, glow_col),
-            sr_vert_c(-nx - 0.06f, ny, nz0 - glow_len,  0, 1, 0xFF000000),
-            sr_vert_c(-nx + 0.06f, ny, nz0 - glow_len,  1, 1, 0xFF000000),
+            sr_vert_c(-nx, ny + gw, nz0,             0.5f, 0, glow_col),
+            sr_vert_c(-nx - gw, ny, nz0 - glow_len,  0, 1, 0xFF000000),
+            sr_vert_c(-nx + gw, ny, nz0 - glow_len,  1, 1, 0xFF000000),
             NULL, &mvp);
         sr_draw_triangle(fb_ptr,
-            sr_vert_c(-nx, ny - 0.05f, nz0,             0.5f, 0, glow_col),
-            sr_vert_c(-nx + 0.06f, ny, nz0 - glow_len,  1, 1, 0xFF000000),
-            sr_vert_c(-nx - 0.06f, ny, nz0 - glow_len,  0, 1, 0xFF000000),
+            sr_vert_c(-nx, ny - gw, nz0,             0.5f, 0, glow_col),
+            sr_vert_c(-nx + gw, ny, nz0 - glow_len,  1, 1, 0xFF000000),
+            sr_vert_c(-nx - gw, ny, nz0 - glow_len,  0, 1, 0xFF000000),
             NULL, &mvp);
 
         /* Right nacelle exhaust */
         sr_draw_triangle(fb_ptr,
-            sr_vert_c(nx, ny + 0.05f, nz0,             0.5f, 0, glow_col),
-            sr_vert_c(nx + 0.06f, ny, nz0 - glow_len,  1, 1, 0xFF000000),
-            sr_vert_c(nx - 0.06f, ny, nz0 - glow_len,  0, 1, 0xFF000000),
+            sr_vert_c(nx, ny + gw, nz0,             0.5f, 0, glow_col),
+            sr_vert_c(nx + gw, ny, nz0 - glow_len,  1, 1, 0xFF000000),
+            sr_vert_c(nx - gw, ny, nz0 - glow_len,  0, 1, 0xFF000000),
             NULL, &mvp);
         sr_draw_triangle(fb_ptr,
-            sr_vert_c(nx, ny - 0.05f, nz0,             0.5f, 0, glow_col),
-            sr_vert_c(nx - 0.06f, ny, nz0 - glow_len,  0, 1, 0xFF000000),
-            sr_vert_c(nx + 0.06f, ny, nz0 - glow_len,  1, 1, 0xFF000000),
+            sr_vert_c(nx, ny - gw, nz0,             0.5f, 0, glow_col),
+            sr_vert_c(nx - gw, ny, nz0 - glow_len,  0, 1, 0xFF000000),
+            sr_vert_c(nx + gw, ny, nz0 - glow_len,  1, 1, 0xFF000000),
             NULL, &mvp);
 
-        /* Main impulse engine exhaust (rear of engineering hull) */
+        /* Main impulse exhaust */
         sr_draw_triangle(fb_ptr,
-            sr_vert_c(0, 0.05f, -1.4f,              0.5f, 0, glow_col),
-            sr_vert_c(-0.12f, 0, -1.4f - glow_len*0.6f, 0, 1, 0xFF000000),
-            sr_vert_c( 0.12f, 0, -1.4f - glow_len*0.6f, 1, 1, 0xFF000000),
+            sr_vert_c(0, 0.05f, p->eng_z0,                  0.5f, 0, glow_col),
+            sr_vert_c(-p->eng_hw*0.5f, 0, p->eng_z0 - glow_len*0.6f, 0, 1, 0xFF000000),
+            sr_vert_c( p->eng_hw*0.5f, 0, p->eng_z0 - glow_len*0.6f, 1, 1, 0xFF000000),
             NULL, &mvp);
     }
 }
@@ -401,18 +456,64 @@ static void sfa_draw_arena_boundary(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
 
 /* ── Target drawing & projection ─────────────────────────────────── */
 
-/* Draw Klingon Bird of Prey — swept wings, central command pod, neck */
+/* ── Parameterized Klingon ship model ────────────────────────────── */
+typedef struct {
+    float body_hw;        /* body half-width */
+    float body_hh_lo;     /* body Y below center */
+    float body_hh_hi;     /* body Y above center */
+    float body_z0;        /* body aft Z */
+    float body_z1;        /* body fore Z */
+    float neck_hw;        /* neck half-width */
+    float neck_z1;        /* neck fore Z (connects to head) */
+    float head_hw;        /* command pod half-width */
+    float head_z0;        /* head aft Z */
+    float head_z1;        /* head fore Z */
+    float wing_span;      /* wing tip X extent */
+    float wing_droop;     /* wing tip Y drop */
+    float wing_fwd;       /* wing tip fore Z */
+    float wing_aft;       /* wing tip aft Z */
+    float gun_size;       /* wingtip gun box half-extent */
+    bool  has_torpedo_pod; /* battlecruiser: belly torpedo pod */
+} kling_ship_params;
+
+static const kling_ship_params kling_params[] = {
+    /* FRIGATE — small raider, tight wings */
+    { 0.20f, 0.08f, 0.10f, -0.6f, 0.0f,
+      0.06f, 0.45f,
+      0.14f, 0.45f, 0.75f,
+      0.9f, -0.10f, 0.25f, -0.12f, 0.05f, false },
+    /* DESTROYER — the original Bird of Prey */
+    { 0.30f, 0.10f, 0.15f, -0.9f, 0.0f,
+      0.10f, 0.70f,
+      0.20f, 0.70f, 1.10f,
+      1.4f, -0.15f, 0.40f, -0.20f, 0.075f, false },
+    /* CRUISER — D7-style: wider body, longer neck, big wings */
+    { 0.38f, 0.12f, 0.18f, -1.2f, 0.0f,
+      0.12f, 0.90f,
+      0.25f, 0.90f, 1.35f,
+      1.7f, -0.18f, 0.55f, -0.30f, 0.09f, false },
+    /* BATTLECRUISER — massive Negh'Var style */
+    { 0.45f, 0.15f, 0.22f, -1.6f, 0.0f,
+      0.14f, 1.10f,
+      0.30f, 1.10f, 1.65f,
+      2.0f, -0.22f, 0.70f, -0.40f, 0.10f, true },
+};
+
 static void sfa_draw_target_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
-                                   float tx, float tz, float heading) {
-    uint32_t hull_t = sfa_pal_abgr(30); /* 239063 dark green */
-    uint32_t hull_s = sfa_pal_abgr(29); /* 165a4c darker green */
-    uint32_t hull_b = sfa_pal_abgr(35); /* 374e4a darkest */
-    uint32_t wing_t = sfa_pal_abgr(36); /* 547e64 olive green */
-    uint32_t wing_s = sfa_pal_abgr(35); /* 374e4a */
-    uint32_t wing_b = sfa_pal_abgr(34); /* 313638 near-black */
-    uint32_t head_t = sfa_pal_abgr(31); /* 1ebc73 bright green */
+                                   float tx, float tz, float heading, int ship_class) {
+    int cls = ship_class;
+    if (cls < 0 || cls >= SHIP_CLASS_COUNT) cls = SHIP_CLASS_DESTROYER;
+    const kling_ship_params *k = &kling_params[cls];
+
+    uint32_t hull_t = sfa_pal_abgr(30);
+    uint32_t hull_s = sfa_pal_abgr(29);
+    uint32_t hull_b = sfa_pal_abgr(35);
+    uint32_t wing_t = sfa_pal_abgr(36);
+    uint32_t wing_s = sfa_pal_abgr(35);
+    uint32_t wing_b = sfa_pal_abgr(34);
+    uint32_t head_t = sfa_pal_abgr(31);
     uint32_t head_s = sfa_pal_abgr(30);
-    uint32_t gun_col = sfa_pal_abgr(15); /* e83b3b red — disruptor */
+    uint32_t gun_col = sfa_pal_abgr(15);
 
     sr_mat4 model = sr_mat4_mul(
         sr_mat4_translate(tx, 0.0f, tz),
@@ -420,79 +521,110 @@ static void sfa_draw_target_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
     );
     sr_mat4 mvp = sr_mat4_mul(*vp, model);
 
-    /* Central body (aft section) */
+    /* Central body */
     sfa_draw_box(fb_ptr, &mvp,
-                 -0.3f, -0.1f, -0.9f,
-                  0.3f,  0.15f, 0.0f,
+                 -k->body_hw, -k->body_hh_lo, k->body_z0,
+                  k->body_hw,  k->body_hh_hi, k->body_z1,
                  hull_t, hull_s, hull_b);
 
-    /* Neck (connecting body to head) */
+    /* Neck */
     sfa_draw_box(fb_ptr, &mvp,
-                 -0.1f, -0.05f, 0.0f,
-                  0.1f,  0.08f, 0.7f,
+                 -k->neck_hw, -k->neck_hw*0.5f, k->body_z1,
+                  k->neck_hw,  k->neck_hw*0.8f, k->neck_z1,
                  hull_t, hull_s, hull_b);
 
-    /* Command pod (head) */
+    /* Command pod */
     sfa_draw_box(fb_ptr, &mvp,
-                 -0.2f, -0.08f, 0.7f,
-                  0.2f,  0.12f, 1.1f,
+                 -k->head_hw, -k->head_hw*0.4f, k->head_z0,
+                  k->head_hw,  k->head_hw*0.6f, k->head_z1,
                  head_t, head_s, hull_b);
 
     /* Disruptor cannon (front of head) */
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(-0.08f, -0.02f, 1.11f, 0,0, gun_col),
-        sr_vert_c(-0.08f,  0.06f, 1.11f, 0,1, gun_col),
-        sr_vert_c( 0.08f,  0.06f, 1.11f, 1,1, gun_col),
-        sr_vert_c( 0.08f, -0.02f, 1.11f, 1,0, gun_col),
-        NULL, &mvp);
+    {
+        float gw = k->head_hw * 0.4f;
+        float gz = k->head_z1 + 0.01f;
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(-gw, -gw*0.25f, gz, 0,0, gun_col),
+            sr_vert_c(-gw,  gw*0.75f, gz, 0,1, gun_col),
+            sr_vert_c( gw,  gw*0.75f, gz, 1,1, gun_col),
+            sr_vert_c( gw, -gw*0.25f, gz, 1,0, gun_col),
+            NULL, &mvp);
+    }
 
-    /* Left swept wing — angled down and forward */
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(-0.3f,  0.05f, -0.6f, 0,0, wing_t),
-        sr_vert_c(-0.3f,  0.05f, -0.1f, 0,1, wing_t),
-        sr_vert_c(-1.4f, -0.15f,  0.4f, 1,1, wing_t),
-        sr_vert_c(-1.4f, -0.15f, -0.2f, 1,0, wing_t),
-        NULL, &mvp);
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(-0.3f, -0.02f, -0.6f, 0,0, wing_b),
-        sr_vert_c(-1.4f, -0.18f, -0.2f, 1,0, wing_b),
-        sr_vert_c(-1.4f, -0.18f,  0.4f, 1,1, wing_b),
-        sr_vert_c(-0.3f, -0.02f, -0.1f, 0,1, wing_b),
-        NULL, &mvp);
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(-0.3f, -0.02f, -0.1f, 0,0, wing_s),
-        sr_vert_c(-1.4f, -0.18f,  0.4f, 1,0, wing_s),
-        sr_vert_c(-1.4f, -0.15f,  0.4f, 1,1, wing_s),
-        sr_vert_c(-0.3f,  0.05f, -0.1f, 0,1, wing_s),
-        NULL, &mvp);
-    sfa_draw_box(fb_ptr, &mvp,
-                 -1.5f, -0.18f, 0.1f,
-                 -1.35f,-0.1f,  0.5f,
-                 gun_col, gun_col, gun_col);
+    /* Torpedo pod (battlecruiser only) */
+    if (k->has_torpedo_pod) {
+        float py = -k->body_hh_lo - 0.08f;
+        sfa_draw_box(fb_ptr, &mvp,
+                     -k->body_hw*0.5f, py - 0.10f, k->body_z0*0.4f,
+                      k->body_hw*0.5f, py,         k->body_z1 + 0.3f,
+                     hull_s, hull_b, hull_b);
+    }
+
+    /* Left swept wing */
+    {
+        float bx = k->body_hw, bz_aft = k->body_z0*0.67f, bz_fwd = k->body_z1*0.1f;
+        float wx = k->wing_span, wd = k->wing_droop;
+        float wz_fwd = k->wing_fwd, wz_aft = k->wing_aft;
+        float yt = 0.05f, yb = -0.02f;
+
+        /* Top face */
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(-bx, yt, bz_aft, 0,0, wing_t),
+            sr_vert_c(-bx, yt, -bz_fwd, 0,1, wing_t),
+            sr_vert_c(-wx, wd, wz_fwd, 1,1, wing_t),
+            sr_vert_c(-wx, wd, wz_aft, 1,0, wing_t),
+            NULL, &mvp);
+        /* Bottom face */
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(-bx, yb, bz_aft, 0,0, wing_b),
+            sr_vert_c(-wx, wd-0.03f, wz_aft, 1,0, wing_b),
+            sr_vert_c(-wx, wd-0.03f, wz_fwd, 1,1, wing_b),
+            sr_vert_c(-bx, yb, -bz_fwd, 0,1, wing_b),
+            NULL, &mvp);
+        /* Leading edge */
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(-bx, yb, -bz_fwd, 0,0, wing_s),
+            sr_vert_c(-wx, wd-0.03f, wz_fwd, 1,0, wing_s),
+            sr_vert_c(-wx, wd, wz_fwd, 1,1, wing_s),
+            sr_vert_c(-bx, yt, -bz_fwd, 0,1, wing_s),
+            NULL, &mvp);
+        /* Wingtip gun */
+        sfa_draw_box(fb_ptr, &mvp,
+                     -wx - k->gun_size, wd - k->gun_size, wz_fwd - k->gun_size*2,
+                     -wx + k->gun_size, wd + k->gun_size, wz_fwd + k->gun_size*4,
+                     gun_col, gun_col, gun_col);
+    }
 
     /* Right swept wing (mirror) */
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(0.3f,  0.05f, -0.1f, 0,0, wing_t),
-        sr_vert_c(0.3f,  0.05f, -0.6f, 0,1, wing_t),
-        sr_vert_c(1.4f, -0.15f, -0.2f, 1,1, wing_t),
-        sr_vert_c(1.4f, -0.15f,  0.4f, 1,0, wing_t),
-        NULL, &mvp);
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(0.3f, -0.02f, -0.1f, 0,0, wing_b),
-        sr_vert_c(0.3f, -0.02f, -0.6f, 0,1, wing_b),
-        sr_vert_c(1.4f, -0.18f, -0.2f, 1,1, wing_b),
-        sr_vert_c(1.4f, -0.18f,  0.4f, 1,0, wing_b),
-        NULL, &mvp);
-    sr_draw_quad(fb_ptr,
-        sr_vert_c(0.3f,  0.05f, -0.1f, 0,0, wing_s),
-        sr_vert_c(0.3f, -0.02f, -0.1f, 0,1, wing_s),
-        sr_vert_c(1.4f, -0.18f,  0.4f, 1,1, wing_s),
-        sr_vert_c(1.4f, -0.15f,  0.4f, 1,0, wing_s),
-        NULL, &mvp);
-    sfa_draw_box(fb_ptr, &mvp,
-                 1.35f, -0.18f, 0.1f,
-                 1.5f,  -0.1f,  0.5f,
-                 gun_col, gun_col, gun_col);
+    {
+        float bx = k->body_hw, bz_aft = k->body_z0*0.67f, bz_fwd = k->body_z1*0.1f;
+        float wx = k->wing_span, wd = k->wing_droop;
+        float wz_fwd = k->wing_fwd, wz_aft = k->wing_aft;
+        float yt = 0.05f, yb = -0.02f;
+
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(bx, yt, -bz_fwd, 0,0, wing_t),
+            sr_vert_c(bx, yt, bz_aft, 0,1, wing_t),
+            sr_vert_c(wx, wd, wz_aft, 1,1, wing_t),
+            sr_vert_c(wx, wd, wz_fwd, 1,0, wing_t),
+            NULL, &mvp);
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(bx, yb, -bz_fwd, 0,0, wing_b),
+            sr_vert_c(bx, yb, bz_aft, 0,1, wing_b),
+            sr_vert_c(wx, wd-0.03f, wz_aft, 1,1, wing_b),
+            sr_vert_c(wx, wd-0.03f, wz_fwd, 1,0, wing_b),
+            NULL, &mvp);
+        sr_draw_quad(fb_ptr,
+            sr_vert_c(bx, yt, -bz_fwd, 0,0, wing_s),
+            sr_vert_c(bx, yb, -bz_fwd, 0,1, wing_s),
+            sr_vert_c(wx, wd-0.03f, wz_fwd, 1,1, wing_s),
+            sr_vert_c(wx, wd, wz_fwd, 1,0, wing_s),
+            NULL, &mvp);
+        sfa_draw_box(fb_ptr, &mvp,
+                     wx - k->gun_size, wd - k->gun_size, wz_fwd - k->gun_size*2,
+                     wx + k->gun_size, wd + k->gun_size, wz_fwd + k->gun_size*4,
+                     gun_col, gun_col, gun_col);
+    }
 }
 
 /* ── 4x4 matrix inverse (cofactor expansion) ────────────────────── */
@@ -601,13 +733,21 @@ static bool sfa_project_to_screen(const sr_mat4 *vp, float wx, float wy, float w
 /* Compute screen-space bracket half-size by projecting ship bounding box corners.
    Returns the max pixel offset from center in X or Y. */
 static int sfa_ship_screen_extent(const sr_mat4 *vp, float ship_x, float ship_z,
-                                    float heading, int W, int H) {
-    /* Target ship local-space bounding box (from vertex data) */
-    static const float bbox_pts[][3] = {
-        {-1.5f, -0.18f, -0.9f}, { 1.5f, -0.18f, -0.9f},
-        {-1.5f,  0.15f, -0.9f}, { 1.5f,  0.15f, -0.9f},
-        {-1.5f, -0.18f,  1.11f},{ 1.5f, -0.18f,  1.11f},
-        {-1.5f,  0.15f,  1.11f},{ 1.5f,  0.15f,  1.11f},
+                                    float heading, int W, int H, int ship_class) {
+    /* Build bounding box from Klingon ship params */
+    int cls = ship_class;
+    if (cls < 0 || cls >= SHIP_CLASS_COUNT) cls = SHIP_CLASS_DESTROYER;
+    const kling_ship_params *k = &kling_params[cls];
+    float bx = k->wing_span + k->gun_size;
+    float by_lo = k->wing_droop - 0.03f;
+    float by_hi = k->body_hh_hi;
+    float bz_lo = k->body_z0;
+    float bz_hi = k->head_z1;
+    float bbox_pts[8][3] = {
+        {-bx, by_lo, bz_lo}, { bx, by_lo, bz_lo},
+        {-bx, by_hi, bz_lo}, { bx, by_hi, bz_lo},
+        {-bx, by_lo, bz_hi}, { bx, by_lo, bz_hi},
+        {-bx, by_hi, bz_hi}, { bx, by_hi, bz_hi},
     };
 
     float ch = cosf(-heading), sh = sinf(-heading);

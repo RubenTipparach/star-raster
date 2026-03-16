@@ -196,7 +196,7 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
     for (int i = 0; i < sfa.npc_count; i++) {
         if (!sfa.npcs[i].alive) continue;
         sfa_draw_target_ship(fb_ptr, &vp, sfa.npcs[i].x, sfa.npcs[i].z,
-                             sfa.npcs[i].visual_heading);
+                             sfa.npcs[i].visual_heading, sfa.npcs[i].ship_class);
     }
 
     /* Draw phaser beams (2D dithered lines projected to screen) */
@@ -317,7 +317,8 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
             float ddz = npc->z - s->z;
             float dist = sqrtf(ddx*ddx + ddz*ddz);
             int bracket_half = sfa_ship_screen_extent(&vp, npc->x, npc->z,
-                                                        npc->visual_heading, W, H);
+                                                        npc->visual_heading, W, H,
+                                                        npc->ship_class);
 
             if (!npc->alive) {
                 /* Dead: show dim X marker */
@@ -332,10 +333,13 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
                 int hbar_h = 2;
                 int hx = scr_x - bracket_half;
                 int hy = scr_y - bracket_half - 5;
-                /* Total: 6 shields * 100 + 100 hull = 700 max */
+                int ncls = npc->ship_class;
+                if (ncls < 0 || ncls >= SHIP_CLASS_COUNT) ncls = SHIP_CLASS_DESTROYER;
+                const ship_class_stats *nsc = &ship_classes[ncls];
+                float max_hp = (float)nsc->hull_max + 6.0f * nsc->shield_max;
                 float total_hp = npc->hull;
                 for (int si = 0; si < 6; si++) total_hp += npc->shields[si];
-                float hp_pct = total_hp / 700.0f;
+                float hp_pct = total_hp / max_hp;
                 if (hp_pct < 0) hp_pct = 0;
                 if (hp_pct > 1) hp_pct = 1;
                 int fill = (int)(hbar_w * hp_pct);

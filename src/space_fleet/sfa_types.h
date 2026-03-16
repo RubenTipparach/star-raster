@@ -121,6 +121,7 @@ typedef struct {
     /* Ship identity */
     uint32_t color_hull;      /* custom hull color (0 = use default) */
     uint32_t color_accent;    /* custom accent color */
+    int      ship_class;      /* SHIP_CLASS_* enum — determines 3D model */
 
     /* Weapons */
     float phaser_cooldown;    /* seconds until phaser ready (0 = ready) */

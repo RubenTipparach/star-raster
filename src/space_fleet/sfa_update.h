@@ -6,16 +6,23 @@
 static void sfa_update(float dt) {
     sfa_ship *s = &sfa.player;
 
+    /* Ship class multipliers */
+    int pcls = s->ship_class;
+    if (pcls < 0 || pcls >= SHIP_CLASS_COUNT) pcls = SHIP_CLASS_CRUISER;
+    float p_turn_mult = ship_classes[pcls].turn_mult;
+    float p_speed_mult = ship_classes[pcls].speed_mult;
+
     /* Apply continuous keyboard/touch steering (positive heading = screen-right) */
-    if (sfa_key_left  || sfa.touch_turn_left)  s->target_heading -= SFA_TURN_RATE * dt;
-    if (sfa_key_right || sfa.touch_turn_right) s->target_heading += SFA_TURN_RATE * dt;
+    float p_turn_rate = SFA_TURN_RATE * p_turn_mult;
+    if (sfa_key_left  || sfa.touch_turn_left)  s->target_heading -= p_turn_rate * dt;
+    if (sfa_key_right || sfa.touch_turn_right) s->target_heading += p_turn_rate * dt;
 
     /* Normalize target heading */
     s->target_heading = sfa_normalize_angle(s->target_heading);
 
     /* Rotate toward target heading */
     float diff = sfa_normalize_angle(s->target_heading - s->heading);
-    float max_turn = SFA_TURN_RATE * dt;
+    float max_turn = p_turn_rate * dt;
     if (diff > max_turn) diff = max_turn;
     else if (diff < -max_turn) diff = -max_turn;
     s->heading += diff;
@@ -27,7 +34,7 @@ static void sfa_update(float dt) {
     s->visual_heading = sfa_normalize_angle(s->visual_heading);
 
     /* Accelerate toward target speed */
-    float target_speed = sfa_speed_values[s->speed_level];
+    float target_speed = sfa_speed_values[s->speed_level] * p_speed_mult;
     float accel = 4.0f; /* units/sec² */
     if (s->current_speed < target_speed) {
         s->current_speed += accel * dt;
@@ -133,9 +140,14 @@ static void sfa_update(float dt) {
         }
         npc->target_heading = sfa_normalize_angle(npc->target_heading);
 
-        /* NPC physics (same as player) */
+        /* NPC physics — scaled by ship class */
+        int ncls = npc->ship_class;
+        if (ncls < 0 || ncls >= SHIP_CLASS_COUNT) ncls = SHIP_CLASS_DESTROYER;
+        float n_turn_rate = SFA_TURN_RATE * ship_classes[ncls].turn_mult;
+        float n_speed_mult = ship_classes[ncls].speed_mult;
+
         float ndiff = sfa_normalize_angle(npc->target_heading - npc->heading);
-        float nmax = SFA_TURN_RATE * dt;
+        float nmax = n_turn_rate * dt;
         if (ndiff > nmax) ndiff = nmax;
         else if (ndiff < -nmax) ndiff = -nmax;
         npc->heading += ndiff;
@@ -145,7 +157,7 @@ static void sfa_update(float dt) {
         npc->visual_heading += nvdiff * 8.0f * dt;
         npc->visual_heading = sfa_normalize_angle(npc->visual_heading);
 
-        float ntarget_speed = sfa_speed_values[npc->speed_level];
+        float ntarget_speed = sfa_speed_values[npc->speed_level] * n_speed_mult;
         if (npc->current_speed < ntarget_speed) {
             npc->current_speed += accel * dt;
             if (npc->current_speed > ntarget_speed) npc->current_speed = ntarget_speed;

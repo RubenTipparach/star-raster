@@ -101,7 +101,8 @@ static void sfa_update_hover(const sr_mat4 *vp, int fb_w, int fb_h) {
 
         /* Compute bracket size from projected ship bounding box */
         int bracket_half = sfa_ship_screen_extent(vp, npc->x, npc->z,
-                                                    npc->visual_heading, fb_w, fb_h);
+                                                    npc->visual_heading, fb_w, fb_h,
+                                                    npc->ship_class);
 
         /* Check if mouse is inside the bracket area */
         float ddx = sfa.mouse_fb_x - (float)scr_x;

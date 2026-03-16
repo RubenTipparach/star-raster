@@ -37,10 +37,19 @@ static void sfa_draw_briefing(sr_framebuffer *fb_ptr) {
     }
     ly += 16;
 
-    sr_draw_text_shadow(px, W, H, lx, ly, "Hull:      100 HP", gray, shadow);  ly += 10;
-    sr_draw_text_shadow(px, W, H, lx, ly, "Shields:   6 x 100", gray, shadow); ly += 10;
-    sr_draw_text_shadow(px, W, H, lx, ly, "Max speed: 12 m/s", gray, shadow);  ly += 10;
-    sr_draw_text_shadow(px, W, H, lx, ly, "Turn rate: 115 deg/s", gray, shadow); ly += 16;
+    {
+        int pcls = campaign.campaign_active ? campaign.player_ship_class : SHIP_CLASS_CRUISER;
+        const ship_class_stats *ps = &ship_classes[pcls];
+        char sbuf[48];
+        snprintf(sbuf, sizeof(sbuf), "Hull:      %d HP", ps->hull_max);
+        sr_draw_text_shadow(px, W, H, lx, ly, sbuf, gray, shadow); ly += 10;
+        snprintf(sbuf, sizeof(sbuf), "Shields:   6 x %.0f", ps->shield_max);
+        sr_draw_text_shadow(px, W, H, lx, ly, sbuf, gray, shadow); ly += 10;
+        snprintf(sbuf, sizeof(sbuf), "Max speed: %.0f m/s", 12.0f * ps->speed_mult);
+        sr_draw_text_shadow(px, W, H, lx, ly, sbuf, gray, shadow); ly += 10;
+        snprintf(sbuf, sizeof(sbuf), "Turn rate: %.0f deg/s", 115.0f * ps->turn_mult);
+        sr_draw_text_shadow(px, W, H, lx, ly, sbuf, gray, shadow); ly += 16;
+    }
 
     sr_draw_text_shadow(px, W, H, lx, ly, "Weapons", accent, shadow); ly += 12;
     sr_draw_text_shadow(px, W, H, lx, ly,     "Phasers",   white, shadow);
@@ -63,16 +72,32 @@ static void sfa_draw_briefing(sr_framebuffer *fb_ptr) {
     sr_draw_text_shadow(px, W, H, rx, ry, "HOSTILES", warn, shadow);
     ry += 14;
     {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%dx Klingon Bird of Prey", sfa.npc_count);
-        sr_draw_text_shadow(px, W, H, rx, ry, buf, white, shadow);
+        char buf[48];
+        /* List enemy ship classes */
+        for (int ei = 0; ei < sfa.npc_count && ei < SFA_MAX_NPC; ei++) {
+            int ecls = sfa.npcs[ei].ship_class;
+            if (ecls < 0 || ecls >= SHIP_CLASS_COUNT) ecls = SHIP_CLASS_DESTROYER;
+            snprintf(buf, sizeof(buf), "Klingon %s", ship_class_names[ecls]);
+            sr_draw_text_shadow(px, W, H, rx, ry, buf, white, shadow);
+            ry += 10;
+        }
     }
-    ry += 16;
-
-    sr_draw_text_shadow(px, W, H, rx, ry, "Hull:      100 HP", gray, shadow);  ry += 10;
-    sr_draw_text_shadow(px, W, H, rx, ry, "Shields:   6 x 100", gray, shadow); ry += 10;
-    sr_draw_text_shadow(px, W, H, rx, ry, "Max speed: 6 m/s", gray, shadow);   ry += 10;
-    sr_draw_text_shadow(px, W, H, rx, ry, "Turn rate: 115 deg/s", gray, shadow); ry += 16;
+    ry += 6;
+    {
+        /* Show stats of first enemy class as representative */
+        int ecls = sfa.npcs[0].ship_class;
+        if (ecls < 0 || ecls >= SHIP_CLASS_COUNT) ecls = SHIP_CLASS_DESTROYER;
+        const ship_class_stats *es = &ship_classes[ecls];
+        char buf[48];
+        snprintf(buf, sizeof(buf), "Hull:      %d HP", es->hull_max);
+        sr_draw_text_shadow(px, W, H, rx, ry, buf, gray, shadow); ry += 10;
+        snprintf(buf, sizeof(buf), "Shields:   6 x %.0f", es->shield_max);
+        sr_draw_text_shadow(px, W, H, rx, ry, buf, gray, shadow); ry += 10;
+        snprintf(buf, sizeof(buf), "Max speed: %.0f m/s", 12.0f * es->speed_mult);
+        sr_draw_text_shadow(px, W, H, rx, ry, buf, gray, shadow); ry += 10;
+        snprintf(buf, sizeof(buf), "Turn rate: %.0f deg/s", 115.0f * es->turn_mult);
+        sr_draw_text_shadow(px, W, H, rx, ry, buf, gray, shadow); ry += 16;
+    }
 
     sr_draw_text_shadow(px, W, H, rx, ry, "Weapons", warn, shadow); ry += 12;
     sr_draw_text_shadow(px, W, H, rx, ry,     "Disruptors", white, shadow);
