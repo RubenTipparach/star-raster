@@ -41,6 +41,7 @@
 #include "sr_scene_palette.h"
 #include "sr_scene_dungeon.h"
 #include "sr_scene_space_fleet.h"
+#include "sr_scene_node_map.h"
 #include "sr_menu.h"
 #include "sr_mobile_input.h"
 
@@ -300,7 +301,7 @@ static void frame(void) {
 
     /* ── Camera (not used by Space Fleet — it has its own) ──── */
     sr_mat4 vp;
-    if (current_scene != SCENE_SPACE_FLEET) {
+    if (current_scene != SCENE_SPACE_FLEET && current_scene != SCENE_NODE_MAP) {
         float angle = (float)time_acc * 0.25f;
         float cam_dist, cam_height;
         sr_vec3 target_pos;
@@ -344,6 +345,8 @@ static void frame(void) {
         clear_color = 0xFF000000;
     else if (current_scene == SCENE_SPACE_FLEET)
         clear_color = SFA_BG_COLOR;
+    else if (current_scene == SCENE_NODE_MAP)
+        clear_color = NM_BG_COLOR;
     else if (night_mode && current_scene == SCENE_NEIGHBORHOOD)
         clear_color = NIGHT_SKY_COLOR;
     else
@@ -406,6 +409,10 @@ static void frame(void) {
             case SCENE_SPACE_FLEET:
                 sr_fog_disable();
                 draw_space_fleet_scene(&fb, (float)dt);
+                break;
+            case SCENE_NODE_MAP:
+                sr_fog_disable();
+                draw_node_map_scene(&fb, (float)dt);
                 break;
         }
     }
@@ -544,6 +551,32 @@ static void event(const sapp_event *ev) {
     double now_time = sapp_frame_count() * sapp_frame_duration();
 
     /* ── Touch / pointer tracking ────────────────────────────── */
+    /* ── Node Map touch routing ────────────────────────────── */
+    if (current_scene == SCENE_NODE_MAP && app_state == STATE_RUNNING) {
+        if (ev->type == SAPP_EVENTTYPE_MOUSE_DOWN && ev->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+            nm_handle_click(ev->mouse_x, ev->mouse_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_MOUSE_MOVE) {
+            nm_handle_mouse_move(ev->mouse_x, ev->mouse_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && ev->num_touches > 0) {
+            nm_handle_click(ev->touches[0].pos_x, ev->touches[0].pos_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_TOUCHES_MOVED && ev->num_touches > 0) {
+            nm_handle_mouse_move(ev->touches[0].pos_x, ev->touches[0].pos_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_KEY_DOWN) {
+            if (ev->key_code == SAPP_KEYCODE_TAB || ev->key_code == SAPP_KEYCODE_ESCAPE)
+                app_state = STATE_MENU;
+            return;
+        }
+        return;
+    }
+
     /* ── Space Fleet touch routing ──────────────────────────── */
     if (current_scene == SCENE_SPACE_FLEET && app_state == STATE_RUNNING) {
         if (ev->type == SAPP_EVENTTYPE_MOUSE_DOWN && ev->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
@@ -683,6 +716,11 @@ static void event(const sapp_event *ev) {
             case SAPP_KEYCODE_5:
                 current_scene = SCENE_SPACE_FLEET;
                 menu_cursor = SCENE_SPACE_FLEET;
+                app_state = STATE_RUNNING;
+                break;
+            case SAPP_KEYCODE_6:
+                current_scene = SCENE_NODE_MAP;
+                menu_cursor = SCENE_NODE_MAP;
                 app_state = STATE_RUNNING;
                 break;
             case SAPP_KEYCODE_ESCAPE:

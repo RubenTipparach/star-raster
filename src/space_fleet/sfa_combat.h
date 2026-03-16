@@ -29,15 +29,43 @@ static void sfa_init_ship(sfa_ship *s, float x, float z, float heading,
 static void sfa_init(void) {
     memset(&sfa, 0, sizeof(sfa));
 
-    /* Player ship — default orange */
+    /* Player ship — stats from ship class if in campaign */
     sfa_init_ship(&sfa.player, 0.0f, 0.0f, 0.0f, 0, 0);
+    if (campaign.campaign_active) {
+        const ship_class_stats *psc = &ship_classes[campaign.player_ship_class];
+        sfa.player.hull = (float)psc->hull_max;
+        for (int i = 0; i < 6; i++)
+            sfa.player.shields[i] = psc->shield_max;
+    }
 
-    /* NPC Klingon ships */
-    sfa.npc_count = 2;
-    sfa_init_ship(&sfa.npcs[0], 15.0f, 20.0f, SFA_PI * 0.75f, 0, 0);
-    sfa.npcs[0].speed_level = SFA_SPEED_QUARTER;
-    sfa_init_ship(&sfa.npcs[1], 30.0f, 20.0f, SFA_PI * 0.25f, 0, 0);
-    sfa.npcs[1].speed_level = SFA_SPEED_HALF;
+    /* Set up NPCs from campaign encounter or default */
+    if (campaign.campaign_active && campaign.encounter_enemy_count > 0) {
+        sfa.npc_count = campaign.encounter_enemy_count;
+        for (int i = 0; i < sfa.npc_count; i++) {
+            float angle = SFA_TWO_PI * (float)i / (float)sfa.npc_count;
+            float dist = 15.0f + 8.0f * (float)i;
+            sfa_init_ship(&sfa.npcs[i],
+                          dist * cosf(angle), dist * sinf(angle),
+                          angle + SFA_PI, 0, 0);
+            int cls = campaign.encounter_enemy_classes[i];
+            if (cls <= SHIP_CLASS_FRIGATE)
+                sfa.npcs[i].speed_level = SFA_SPEED_HALF;
+            else
+                sfa.npcs[i].speed_level = SFA_SPEED_QUARTER;
+            /* Scale enemy stats by ship class */
+            const ship_class_stats *esc = &ship_classes[cls];
+            sfa.npcs[i].hull = (float)esc->hull_max;
+            for (int j = 0; j < 6; j++)
+                sfa.npcs[i].shields[j] = esc->shield_max;
+        }
+    } else {
+        /* Default sandbox: 2 Klingon ships */
+        sfa.npc_count = 2;
+        sfa_init_ship(&sfa.npcs[0], 15.0f, 20.0f, SFA_PI * 0.75f, 0, 0);
+        sfa.npcs[0].speed_level = SFA_SPEED_QUARTER;
+        sfa_init_ship(&sfa.npcs[1], 30.0f, 20.0f, SFA_PI * 0.25f, 0, 0);
+        sfa.npcs[1].speed_level = SFA_SPEED_HALF;
+    }
 
     sfa.hovered_npc = -1;
     sfa.selected_npc = -1;

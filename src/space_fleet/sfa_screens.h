@@ -30,7 +30,11 @@ static void sfa_draw_briefing(sr_framebuffer *fb_ptr) {
     int ly = 52;
     sr_draw_text_shadow(px, W, H, lx, ly, "YOUR SHIP", accent, shadow);
     ly += 14;
-    sr_draw_text_shadow(px, W, H, lx, ly, "Federation Cruiser", white, shadow);
+    if (campaign.campaign_active) {
+        sr_draw_text_shadow(px, W, H, lx, ly, ship_class_names[campaign.player_ship_class], white, shadow);
+    } else {
+        sr_draw_text_shadow(px, W, H, lx, ly, "Federation Cruiser", white, shadow);
+    }
     ly += 16;
 
     sr_draw_text_shadow(px, W, H, lx, ly, "Hull:      100 HP", gray, shadow);  ly += 10;
@@ -181,13 +185,21 @@ static void sfa_draw_stats_screen(sr_framebuffer *fb_ptr) {
     sr_draw_text_shadow(px, W, H, cx, y, buf, gray, shadow); y += 12;
 
     snprintf(buf, sizeof(buf), "Torpedoes left:    %d", sfa.player.torpedoes_remaining);
-    sr_draw_text_shadow(px, W, H, cx, y, buf, gray, shadow);
+    sr_draw_text_shadow(px, W, H, cx, y, buf, gray, shadow); y += 16;
+
+    /* Campaign reward info */
+    if (campaign.campaign_active) {
+        sr_draw_text_shadow(px, W, H, cx, y, "MISSION REWARD", accent, shadow); y += 14;
+        snprintf(buf, sizeof(buf), "Credits earned:    %d", campaign.encounter_reward);
+        sr_draw_text_shadow(px, W, H, cx, y, buf, green, shadow);
+    }
 
     /* Prompt */
     float blink = sinf(sfa.time * 4.0f);
     if (blink > 0) {
-        sr_draw_text_shadow(px, W, H, (W - 20*6)/2, H - 24,
-                             "Click to return home", white, shadow);
+        const char *prompt = campaign.campaign_active ? "Click to return to sector map" : "Click to return home";
+        int tw2 = (int)strlen(prompt) * 6;
+        sr_draw_text_shadow(px, W, H, (W - tw2)/2, H - 24, prompt, white, shadow);
     }
 }
 

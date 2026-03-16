@@ -14,8 +14,15 @@ static bool sfa_handle_touch_began(float sx, float sy) {
         return true;
     }
     if (sfa.phase == SFA_PHASE_STATS) {
-        sfa.initialized = false;  /* reset for next play */
-        app_state = STATE_MENU;
+        sfa.initialized = false;
+        if (campaign.campaign_active) {
+            /* Return to sector map with victory */
+            campaign.combat_victory = true;
+            current_scene = SCENE_NODE_MAP;
+            campaign.event_type = -1;
+        } else {
+            app_state = STATE_MENU;
+        }
         return true;
     }
     if (sfa.phase == SFA_PHASE_VICTORY) {
