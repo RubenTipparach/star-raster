@@ -199,7 +199,7 @@ static void init(void) {
 
     sg_filter upscale_filter = SG_FILTER_NEAREST;
 #if defined(__EMSCRIPTEN__)
-    if (EM_ASM_INT({ return window.matchMedia('(hover: none) and (pointer: coarse)').matches ? 1 : 0; })) {
+    if (emscripten_run_script_int("window.matchMedia('(hover: none) and (pointer: coarse)').matches ? 1 : 0")) {
         upscale_filter = SG_FILTER_LINEAR;
     }
 #endif
