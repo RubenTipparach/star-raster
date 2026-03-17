@@ -63,10 +63,15 @@ jobs:
           name: starraster-web
           path: build/web/
 
+      - name: Prepare Pages build with mobile fullscreen
+        run: |
+          cp -r build/web build/pages
+          sed -i 's|// @FULLSCREEN_ON_TOUCH@|canvas.addEventListener("touchstart", function() { var el = document.documentElement; if (!document.fullscreenElement) { (el.requestFullscreen || el.webkitRequestFullscreen).call(el); } }, { once: true });|' build/pages/index.html
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: build/web/
+          path: build/pages/
 
   build-windows:
     name: Windows Build

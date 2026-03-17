@@ -43,6 +43,7 @@ canvas {
             }, false);
             canvas.addEventListener('mousedown', function() { canvas.focus(); });
             canvas.addEventListener('touchstart', function() { canvas.focus(); });
+            // @FULLSCREEN_ON_TOUCH@
             return canvas;
         })(),
         onRuntimeInitialized: function() {
