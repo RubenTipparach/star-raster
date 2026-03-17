@@ -5,6 +5,15 @@ on:
     branches: [master]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   build-web:
     name: Web (WASM) Build
@@ -52,6 +61,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: starraster-web
+          path: build/web/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
           path: build/web/
 
   build-windows:
@@ -132,3 +146,15 @@ jobs:
           project: ruben-tipparach/star-raster
           channel: windows
           api-key: ${{ secrets.BUTLER_API_KEY }}
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: build-web
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
