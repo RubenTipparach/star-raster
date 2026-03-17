@@ -52,6 +52,7 @@ static void sfa_init(void) {
                           angle + SFA_PI, 0, 0);
             int cls = campaign.encounter_enemy_classes[i];
             sfa.npcs[i].ship_class = cls;
+            sfa.npcs[i].is_boss = campaign.encounter_enemy_is_boss[i];
             if (cls <= SHIP_CLASS_FRIGATE)
                 sfa.npcs[i].speed_level = SFA_SPEED_HALF;
             else

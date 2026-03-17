@@ -56,6 +56,7 @@ typedef struct {
     bool  reachable;
     int   enemy_count;
     int   enemy_classes[4];
+    bool  enemy_is_boss[4];
     int   reward;
     const char *event_title;
     const char *event_desc;
@@ -110,27 +111,62 @@ static void nm_update_reachable(void);
 
 /* ── Map generation ──────────────────────────────────────────────── */
 
-/* Compute enemy setup for a combat node based on column depth (0-7).
-   Early columns: small ships (frigates). Later: bigger ships. */
+/* Chapter names for the 4-chapter campaign */
+static const char *nm_chapter_names[] = {
+    "CHAPTER 1: BORDER PATROL",
+    "CHAPTER 2: RISING THREAT",
+    "CHAPTER 3: DEEP SPACE",
+    "CHAPTER 4: FINAL ASSAULT"
+};
+
+/* Compute enemy setup for a combat node based on column depth and chapter.
+   Each chapter features progressively tougher ships. */
 static void nm_setup_combat_for_depth(nm_node *n, int depth, int sector) {
-    /* depth 1-2: 1 frigate, depth 3-4: 1-2 frigates/destroyers,
-       depth 5-6: 2-3 destroyers/cruisers */
-    if (depth <= 2) {
-        n->enemy_count = 1;
+    int ch = sector;
+    if (ch > 3) ch = 3;
+
+    /* Chapter determines the primary ship class for encounters */
+    switch (ch) {
+    case 0: /* Chapter 1: mainly frigates */
+        if (depth <= 3) {
+            n->enemy_count = 1;
+        } else {
+            n->enemy_count = 1 + (int)(nm_randf() * 1.5f);
+            if (n->enemy_count > 2) n->enemy_count = 2;
+        }
         for (int e = 0; e < n->enemy_count; e++)
             n->enemy_classes[e] = SHIP_CLASS_FRIGATE;
-    } else if (depth <= 4) {
-        n->enemy_count = 1 + (int)(nm_randf() * 1.5f);
-        if (n->enemy_count > 2) n->enemy_count = 2;
-        int max_cls = SHIP_CLASS_DESTROYER;
-        for (int e = 0; e < n->enemy_count; e++)
-            n->enemy_classes[e] = nm_randi(SHIP_CLASS_FRIGATE, max_cls);
-    } else {
+        break;
+    case 1: /* Chapter 2: mainly destroyers, some frigates */
+        if (depth <= 2) {
+            n->enemy_count = 1;
+            n->enemy_classes[0] = nm_randi(SHIP_CLASS_FRIGATE, SHIP_CLASS_DESTROYER);
+        } else {
+            n->enemy_count = 1 + (int)(nm_randf() * 1.5f);
+            if (n->enemy_count > 2) n->enemy_count = 2;
+            for (int e = 0; e < n->enemy_count; e++)
+                n->enemy_classes[e] = nm_randi(SHIP_CLASS_FRIGATE, SHIP_CLASS_DESTROYER);
+        }
+        break;
+    case 2: /* Chapter 3: mainly cruisers, some destroyers */
+        if (depth <= 2) {
+            n->enemy_count = 1 + (int)(nm_randf() * 1.5f);
+            if (n->enemy_count > 2) n->enemy_count = 2;
+            for (int e = 0; e < n->enemy_count; e++)
+                n->enemy_classes[e] = nm_randi(SHIP_CLASS_DESTROYER, SHIP_CLASS_CRUISER);
+        } else {
+            n->enemy_count = 2 + (int)(nm_randf() * 1.5f);
+            if (n->enemy_count > 3) n->enemy_count = 3;
+            for (int e = 0; e < n->enemy_count; e++)
+                n->enemy_classes[e] = nm_randi(SHIP_CLASS_DESTROYER, SHIP_CLASS_CRUISER);
+        }
+        break;
+    default: /* Chapter 4: all ship types, heavy encounters */
         n->enemy_count = 2 + (int)(nm_randf() * 1.5f);
         if (n->enemy_count > 3) n->enemy_count = 3;
-        int max_cls = SHIP_CLASS_CRUISER;
         for (int e = 0; e < n->enemy_count; e++)
-            n->enemy_classes[e] = nm_randi(SHIP_CLASS_DESTROYER, max_cls);
+            n->enemy_classes[e] = nm_randi(SHIP_CLASS_DESTROYER, SHIP_CLASS_BATTLECRUISER);
+        break;
     }
     n->reward = 80 + depth * 30 + sector * 40 + n->enemy_count * 30;
 }
@@ -221,17 +257,48 @@ static void nm_generate_sector(int sector) {
         }
     }
 
-    /* Boss node (final column) — Klingon Battlecruiser */
+    /* Boss node (final column) — chapter-specific boss fleet */
     col_start[cols - 1] = idx;
     nm.nodes[idx].type = NM_NODE_BOSS;
     nm.nodes[idx].x = col_x[cols - 1];
     nm.nodes[idx].y = FB_HEIGHT / 2;
-    nm.nodes[idx].enemy_count = 1 + sector;
-    if (nm.nodes[idx].enemy_count > 3) nm.nodes[idx].enemy_count = 3;
-    /* Lead enemy is always a Battlecruiser; escorts scale with sector */
-    nm.nodes[idx].enemy_classes[0] = SHIP_CLASS_BATTLECRUISER;
-    for (int e = 1; e < nm.nodes[idx].enemy_count; e++)
-        nm.nodes[idx].enemy_classes[e] = nm_randi(SHIP_CLASS_CRUISER, SHIP_CLASS_BATTLECRUISER);
+    memset(nm.nodes[idx].enemy_is_boss, 0, sizeof(nm.nodes[idx].enemy_is_boss));
+    {
+        nm_node *boss = &nm.nodes[idx];
+        int ch = sector;
+        if (ch > 3) ch = 3;
+        switch (ch) {
+        case 0: /* Ch1: red Destroyer boss + 2 Frigates */
+            boss->enemy_count = 3;
+            boss->enemy_classes[0] = SHIP_CLASS_DESTROYER;
+            boss->enemy_is_boss[0] = true;
+            boss->enemy_classes[1] = SHIP_CLASS_FRIGATE;
+            boss->enemy_classes[2] = SHIP_CLASS_FRIGATE;
+            break;
+        case 1: /* Ch2: red Cruiser boss + 2 Destroyers */
+            boss->enemy_count = 3;
+            boss->enemy_classes[0] = SHIP_CLASS_CRUISER;
+            boss->enemy_is_boss[0] = true;
+            boss->enemy_classes[1] = SHIP_CLASS_DESTROYER;
+            boss->enemy_classes[2] = SHIP_CLASS_DESTROYER;
+            break;
+        case 2: /* Ch3: red Battlecruiser boss + 2 Cruisers */
+            boss->enemy_count = 3;
+            boss->enemy_classes[0] = SHIP_CLASS_BATTLECRUISER;
+            boss->enemy_is_boss[0] = true;
+            boss->enemy_classes[1] = SHIP_CLASS_CRUISER;
+            boss->enemy_classes[2] = SHIP_CLASS_CRUISER;
+            break;
+        default: /* Ch4: full fleet — red Battlecruiser + Cruiser + Destroyer + Frigate */
+            boss->enemy_count = 4;
+            boss->enemy_classes[0] = SHIP_CLASS_BATTLECRUISER;
+            boss->enemy_is_boss[0] = true;
+            boss->enemy_classes[1] = SHIP_CLASS_CRUISER;
+            boss->enemy_classes[2] = SHIP_CLASS_DESTROYER;
+            boss->enemy_classes[3] = SHIP_CLASS_FRIGATE;
+            break;
+        }
+    }
     nm.nodes[idx].reward = 300 + sector * 100;
     idx++;
     col_start[cols] = idx;
@@ -412,8 +479,10 @@ static void nm_draw_map(sr_framebuffer *fb_ptr) {
 
     /* Title bar */
     nm_draw_rect(px, W, H, 0, 0, W, 14, NM_HUD_BG);
-    char title[64];
-    snprintf(title, sizeof(title), "SECTOR %d  -  %d CREDITS", campaign.sector + 1, campaign.credits);
+    char title[80];
+    int ch = campaign.sector;
+    if (ch > 3) ch = 3;
+    snprintf(title, sizeof(title), "%s  -  %d CR", nm_chapter_names[ch], campaign.credits);
     sr_draw_text_shadow(px, W, H, 4, 3, title, NM_TEXT_BRIGHT, NM_TEXT_SHADOW);
 
     char ship_info[48];
@@ -665,8 +734,10 @@ static void nm_enter_node(int node_idx) {
         case NM_NODE_COMBAT:
         case NM_NODE_BOSS:
             campaign.encounter_enemy_count = n->enemy_count;
-            for (int i = 0; i < n->enemy_count; i++)
+            for (int i = 0; i < n->enemy_count; i++) {
                 campaign.encounter_enemy_classes[i] = n->enemy_classes[i];
+                campaign.encounter_enemy_is_boss[i] = n->enemy_is_boss[i];
+            }
             campaign.encounter_reward = n->reward;
             campaign.combat_victory = false;
             current_scene = SCENE_SPACE_FLEET;
