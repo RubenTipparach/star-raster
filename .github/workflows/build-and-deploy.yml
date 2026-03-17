@@ -116,6 +116,7 @@ jobs:
 
   deploy-itch:
     name: Deploy to itch.io
+    if: github.ref == 'refs/heads/master'
     needs: [build-web, build-windows]
     runs-on: ubuntu-latest
     steps:
@@ -149,6 +150,7 @@ jobs:
 
   deploy-pages:
     name: Deploy to GitHub Pages
+    if: github.ref == 'refs/heads/master'
     needs: build-web
     runs-on: ubuntu-latest
     environment:
