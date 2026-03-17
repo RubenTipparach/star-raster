@@ -10,8 +10,9 @@
 
 /* ── Constants ───────────────────────────────────────────────────── */
 
-#define NM_MAX_NODES      24
-#define NM_MAX_EDGES      60
+#define NM_MAX_NODES      40
+#define NM_MAX_EDGES      96
+#define NM_MAP_COLS        8
 
 /* Node types */
 enum {
@@ -109,6 +110,31 @@ static void nm_update_reachable(void);
 
 /* ── Map generation ──────────────────────────────────────────────── */
 
+/* Compute enemy setup for a combat node based on column depth (0-7).
+   Early columns: small ships (frigates). Later: bigger ships. */
+static void nm_setup_combat_for_depth(nm_node *n, int depth, int sector) {
+    /* depth 1-2: 1 frigate, depth 3-4: 1-2 frigates/destroyers,
+       depth 5-6: 2-3 destroyers/cruisers */
+    if (depth <= 2) {
+        n->enemy_count = 1;
+        for (int e = 0; e < n->enemy_count; e++)
+            n->enemy_classes[e] = SHIP_CLASS_FRIGATE;
+    } else if (depth <= 4) {
+        n->enemy_count = 1 + (int)(nm_randf() * 1.5f);
+        if (n->enemy_count > 2) n->enemy_count = 2;
+        int max_cls = SHIP_CLASS_DESTROYER;
+        for (int e = 0; e < n->enemy_count; e++)
+            n->enemy_classes[e] = nm_randi(SHIP_CLASS_FRIGATE, max_cls);
+    } else {
+        n->enemy_count = 2 + (int)(nm_randf() * 1.5f);
+        if (n->enemy_count > 3) n->enemy_count = 3;
+        int max_cls = SHIP_CLASS_CRUISER;
+        for (int e = 0; e < n->enemy_count; e++)
+            n->enemy_classes[e] = nm_randi(SHIP_CLASS_DESTROYER, max_cls);
+    }
+    n->reward = 80 + depth * 30 + sector * 40 + n->enemy_count * 30;
+}
+
 static void nm_generate_sector(int sector) {
     memset(&nm, 0, sizeof(nm));
     nm.hovered_node = -1;
@@ -116,12 +142,16 @@ static void nm_generate_sector(int sector) {
 
     nm_rng = 54321u + (uint32_t)sector * 77777u;
 
-    int cols = 5;
-    int col_x[] = { 50, 130, 210, 290, 380 };
-    int col_start[6];
+    int cols = NM_MAP_COLS;
+    /* 8 evenly-spaced columns across the framebuffer */
+    int col_x[NM_MAP_COLS];
+    for (int c = 0; c < cols; c++)
+        col_x[c] = 30 + c * (FB_WIDTH - 60) / (cols - 1);
+
+    int col_start[NM_MAP_COLS + 1];
     int idx = 0;
 
-    /* Start node */
+    /* Start node (column 0) */
     nm.nodes[idx].type = NM_NODE_START;
     nm.nodes[idx].x = col_x[0];
     nm.nodes[idx].y = FB_HEIGHT / 2;
@@ -129,50 +159,43 @@ static void nm_generate_sector(int sector) {
     col_start[0] = 0;
     idx++;
 
-    /* Middle columns */
+    /* Middle columns (1 through cols-2): 3-4 random nodes each */
     for (int c = 1; c < cols - 1; c++) {
         col_start[c] = idx;
-        int count = 2 + (int)(nm_randf() * 2.5f);
+        int count = 3 + (int)(nm_randf() * 1.99f); /* 3 or 4 */
         if (count > 4) count = 4;
         int spacing = FB_HEIGHT / (count + 1);
 
         for (int r = 0; r < count; r++) {
             nm_node *n = &nm.nodes[idx];
-            n->x = col_x[c] + nm_randi(-10, 10);
-            n->y = spacing * (r + 1) + nm_randi(-8, 8);
+            n->x = col_x[c] + nm_randi(-8, 8);
+            n->y = spacing * (r + 1) + nm_randi(-6, 6);
             if (n->y < 20) n->y = 20;
             if (n->y > FB_HEIGHT - 20) n->y = FB_HEIGHT - 20;
 
             float roll = nm_randf();
-            if (roll < 0.50f) {
+            if (roll < 0.55f) {
                 n->type = NM_NODE_COMBAT;
-                n->enemy_count = 1 + sector / 2;
-                if (n->enemy_count > 4) n->enemy_count = 4;
-                for (int e = 0; e < n->enemy_count; e++) {
-                    int max_class = sector;
-                    if (max_class >= SHIP_CLASS_COUNT) max_class = SHIP_CLASS_COUNT - 1;
-                    n->enemy_classes[e] = nm_randi(0, max_class);
-                }
-                n->reward = 100 + sector * 50 + n->enemy_count * 40;
-            } else if (roll < 0.75f) {
+                nm_setup_combat_for_depth(n, c, sector);
+            } else if (roll < 0.80f) {
                 n->type = NM_NODE_EVENT;
                 n->sub_type = nm_randi(0, 2);
                 switch (n->sub_type) {
                     case NM_EVT_DISTRESS:
                         n->event_title = "DISTRESS SIGNAL";
                         n->event_desc = "A civilian freighter is under attack.";
-                        n->reward = 80 + sector * 30;
-                        n->event_choice_credits = 80 + sector * 30;
+                        n->reward = 80 + c * 15 + sector * 30;
+                        n->event_choice_credits = 80 + c * 15 + sector * 30;
                         break;
                     case NM_EVT_TRADER:
                         n->event_title = "TRADER VESSEL";
                         n->event_desc = "A Ferengi merchant hails your ship.";
-                        n->event_choice_credits = 50 + sector * 20;
+                        n->event_choice_credits = 50 + c * 10 + sector * 20;
                         break;
                     case NM_EVT_ANOMALY:
                         n->event_title = "SPACE ANOMALY";
                         n->event_desc = "Sensors detect unusual energy readings.";
-                        n->event_choice_credits = 60 + sector * 25;
+                        n->event_choice_credits = 60 + c * 12 + sector * 25;
                         break;
                 }
             } else {
@@ -182,32 +205,34 @@ static void nm_generate_sector(int sector) {
         }
     }
 
-    /* Ensure at least one shop exists in the middle columns */
+    /* Ensure at least 2 shops exist in the middle columns */
     {
-        bool has_shop = false;
+        int shop_count = 0;
         for (int i = col_start[1]; i < idx; i++) {
-            if (nm.nodes[i].type == NM_NODE_SHOP) { has_shop = true; break; }
+            if (nm.nodes[i].type == NM_NODE_SHOP) shop_count++;
         }
-        if (!has_shop && idx > col_start[1]) {
-            /* Convert a random non-start/non-boss middle node to shop */
+        while (shop_count < 2 && idx > col_start[1]) {
+            /* Pick a random middle node that isn't already a shop */
             int pick = col_start[1] + nm_randi(0, idx - col_start[1] - 1);
-            nm.nodes[pick].type = NM_NODE_SHOP;
+            if (nm.nodes[pick].type != NM_NODE_SHOP) {
+                nm.nodes[pick].type = NM_NODE_SHOP;
+                shop_count++;
+            }
         }
     }
 
-    /* Boss node */
+    /* Boss node (final column) — Klingon Battlecruiser */
     col_start[cols - 1] = idx;
     nm.nodes[idx].type = NM_NODE_BOSS;
     nm.nodes[idx].x = col_x[cols - 1];
     nm.nodes[idx].y = FB_HEIGHT / 2;
-    nm.nodes[idx].enemy_count = 2 + sector / 2;
-    if (nm.nodes[idx].enemy_count > 4) nm.nodes[idx].enemy_count = 4;
-    for (int e = 0; e < nm.nodes[idx].enemy_count; e++) {
-        int cls = sector;
-        if (cls >= SHIP_CLASS_COUNT) cls = SHIP_CLASS_COUNT - 1;
-        nm.nodes[idx].enemy_classes[e] = cls;
-    }
-    nm.nodes[idx].reward = 200 + sector * 100;
+    nm.nodes[idx].enemy_count = 1 + sector;
+    if (nm.nodes[idx].enemy_count > 3) nm.nodes[idx].enemy_count = 3;
+    /* Lead enemy is always a Battlecruiser; escorts scale with sector */
+    nm.nodes[idx].enemy_classes[0] = SHIP_CLASS_BATTLECRUISER;
+    for (int e = 1; e < nm.nodes[idx].enemy_count; e++)
+        nm.nodes[idx].enemy_classes[e] = nm_randi(SHIP_CLASS_CRUISER, SHIP_CLASS_BATTLECRUISER);
+    nm.nodes[idx].reward = 300 + sector * 100;
     idx++;
     col_start[cols] = idx;
     nm.node_count = idx;
