@@ -4,6 +4,7 @@
 
 #if defined(__EMSCRIPTEN__)
     #define SOKOL_GLES3
+    #include <emscripten.h>
 #else
     #define SOKOL_GLCORE
 #endif
@@ -196,9 +197,15 @@ static void init(void) {
         .texture.image = fb_image,
     });
 
+    sg_filter upscale_filter = SG_FILTER_NEAREST;
+#if defined(__EMSCRIPTEN__)
+    if (EM_ASM_INT({ return window.matchMedia('(hover: none) and (pointer: coarse)').matches ? 1 : 0; })) {
+        upscale_filter = SG_FILTER_LINEAR;
+    }
+#endif
     fb_sampler = sg_make_sampler(&(sg_sampler_desc){
-        .min_filter = SG_FILTER_LINEAR,
-        .mag_filter = SG_FILTER_LINEAR,
+        .min_filter = upscale_filter,
+        .mag_filter = upscale_filter,
     });
 
     float verts[] = {
