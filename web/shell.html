@@ -75,13 +75,30 @@ canvas {
         }
     };
 
+    function lockLandscape() {
+        if (screen.orientation && screen.orientation.lock) {
+            screen.orientation.lock('landscape').catch(function(){});
+        }
+    }
+
     document.getElementById('play-btn').addEventListener('click', function() {
         this.style.display = 'none';
         document.getElementById('canvas').style.display = 'block';
         var el = document.documentElement;
         var fn = el.requestFullscreen || el.webkitRequestFullscreen;
-        if (fn) { fn.call(el); }
+        if (fn) {
+            var p = fn.call(el);
+            if (p && p.then) { p.then(lockLandscape); }
+        }
         document.getElementById('canvas').focus();
+    });
+
+    // Also lock landscape when entering fullscreen from iframe context
+    document.addEventListener('fullscreenchange', function() {
+        if (document.fullscreenElement) { lockLandscape(); }
+    });
+    document.addEventListener('webkitfullscreenchange', function() {
+        if (document.webkitFullscreenElement) { lockLandscape(); }
     });
 </script>
 {{{ SCRIPT }}}
