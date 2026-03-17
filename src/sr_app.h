@@ -44,12 +44,14 @@ static int    screenshot_counter;
 
 /* ── Scene / Menu state ─────────────────────────────────────────── */
 
-enum { SCENE_NEIGHBORHOOD, SCENE_CUBES, SCENE_PALETTE_HOUSE, SCENE_DUNGEON, SCENE_SPACE_FLEET, SCENE_COUNT };
-enum { STATE_MENU, STATE_RUNNING };
+enum { SCENE_NEIGHBORHOOD, SCENE_CUBES, SCENE_PALETTE_HOUSE, SCENE_DUNGEON, SCENE_SPACE_FLEET, SCENE_NODE_MAP, SCENE_SHIP_VIEWER, SCENE_COUNT };
+#define SCENE_MENU_COUNT (SCENE_SPACE_FLEET + 1)  /* only show up to SPACE FLEET in main menu */
+enum { STATE_MENU, STATE_RUNNING, STATE_SFA_SUBMENU };
 
 static int  app_state     = STATE_MENU;
 static int  current_scene = SCENE_NEIGHBORHOOD;
 static int  menu_cursor   = 0;
+static int  sfa_submenu_cursor = 0;  /* 0=Instant Action, 1=Campaign */
 
 static const char *scene_names[] = {
     "NEIGHBORHOOD",
@@ -57,6 +59,8 @@ static const char *scene_names[] = {
     "PALETTE HOUSE",
     "DUNGEON CRAWLER",
     "SPACE FLEET",
+    "SECTOR MAP",
+    "SHIP VIEWER",
 };
 
 /* ── Simple RNG (deterministic) ─────────────────────────────────── */
@@ -92,5 +96,55 @@ static void screen_to_fb(float sx, float sy, float *fbx, float *fby) {
     *fbx = (sx - ox) / scaled_w * (float)FB_WIDTH;
     *fby = (sy - oy) / scaled_h * (float)FB_HEIGHT;
 }
+
+/* ── Ship classes ───────────────────────────────────────────────── */
+
+enum {
+    SHIP_CLASS_FRIGATE,
+    SHIP_CLASS_DESTROYER,
+    SHIP_CLASS_CRUISER,
+    SHIP_CLASS_BATTLECRUISER,
+    SHIP_CLASS_COUNT
+};
+
+static const char *ship_class_names[] = {
+    "FRIGATE", "DESTROYER", "CRUISER", "BATTLECRUISER"
+};
+
+typedef struct {
+    int   hull_max;
+    float shield_max;
+    float speed_mult;
+    float turn_mult;
+    int   cost;
+} ship_class_stats;
+
+static const ship_class_stats ship_classes[] = {
+    {  60,   60.0f, 1.3f, 1.4f,    0 },  /* FRIGATE */
+    { 100,   80.0f, 1.0f, 1.0f,  400 },  /* DESTROYER */
+    { 160,  120.0f, 0.8f, 0.7f,  900 },  /* CRUISER */
+    { 250,  160.0f, 0.6f, 0.5f, 1800 },  /* BATTLECRUISER */
+};
+
+/* ── Campaign state (persists across map/combat scenes) ────────── */
+
+typedef struct {
+    int  credits;
+    int  player_ship_class;
+    int  current_node;
+    int  sector;
+    bool campaign_active;
+
+    /* Combat encounter setup */
+    int  encounter_enemy_count;
+    int  encounter_enemy_classes[4];
+    int  encounter_reward;
+    bool combat_victory;
+
+    /* Signal for scene transitions */
+    int  event_type;  /* -1 = reinit signal */
+} campaign_state;
+
+static campaign_state campaign;
 
 #endif /* SR_APP_H */

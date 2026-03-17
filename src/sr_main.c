@@ -42,6 +42,8 @@
 #include "sr_scene_palette.h"
 #include "sr_scene_dungeon.h"
 #include "sr_scene_space_fleet.h"
+#include "sr_scene_node_map.h"
+#include "sr_scene_ship_viewer.h"
 #include "sr_menu.h"
 #include "sr_mobile_input.h"
 
@@ -307,7 +309,7 @@ static void frame(void) {
 
     /* ── Camera (not used by Space Fleet — it has its own) ──── */
     sr_mat4 vp;
-    if (current_scene != SCENE_SPACE_FLEET) {
+    if (current_scene != SCENE_SPACE_FLEET && current_scene != SCENE_NODE_MAP && current_scene != SCENE_SHIP_VIEWER) {
         float angle = (float)time_acc * 0.25f;
         float cam_dist, cam_height;
         sr_vec3 target_pos;
@@ -351,6 +353,10 @@ static void frame(void) {
         clear_color = 0xFF000000;
     else if (current_scene == SCENE_SPACE_FLEET)
         clear_color = SFA_BG_COLOR;
+    else if (current_scene == SCENE_NODE_MAP)
+        clear_color = NM_BG_COLOR;
+    else if (current_scene == SCENE_SHIP_VIEWER)
+        clear_color = 0xFF1A0A0A;
     else if (night_mode && current_scene == SCENE_NEIGHBORHOOD)
         clear_color = NIGHT_SKY_COLOR;
     else
@@ -414,6 +420,14 @@ static void frame(void) {
                 sr_fog_disable();
                 draw_space_fleet_scene(&fb, (float)dt);
                 break;
+            case SCENE_NODE_MAP:
+                sr_fog_disable();
+                draw_node_map_scene(&fb, (float)dt);
+                break;
+            case SCENE_SHIP_VIEWER:
+                sr_fog_disable();
+                draw_ship_viewer_scene(&fb, (float)dt);
+                break;
         }
     }
 
@@ -422,6 +436,8 @@ static void frame(void) {
 
     if (app_state == STATE_MENU)
         draw_menu(&fb);
+    else if (app_state == STATE_SFA_SUBMENU)
+        draw_sfa_submenu(&fb);
 
     /* ── GIF capture (time-based, 24fps) ─────────────────────── */
     if (sr_gif_is_recording()) {
@@ -490,15 +506,49 @@ static void handle_tap(float sx, float sy) {
     float fx, fy;
     screen_to_fb(sx, sy, &fx, &fy);
 
-    if (app_state == STATE_MENU) {
-        for (int i = 0; i < SCENE_COUNT; i++) {
+    if (app_state == STATE_SFA_SUBMENU) {
+        for (int i = 0; i < 3; i++) {
+            float item_y = 125.0f + (float)i * 15.0f;
+            if (fx >= 140.0f && fx <= 340.0f &&
+                fy >= item_y - 4.0f && fy <= item_y + 12.0f) {
+                sfa_submenu_cursor = i;
+                if (i == 0) {
+                    campaign.campaign_active = false;
+                    current_scene = SCENE_SPACE_FLEET;
+                    sfa.initialized = false;
+                    app_state = STATE_RUNNING;
+                } else if (i == 1) {
+                    campaign.campaign_active = true;
+                    campaign.credits = 0;
+                    campaign.player_ship_class = SHIP_CLASS_FRIGATE;
+                    campaign.current_node = 0;
+                    campaign.sector = 1;
+                    campaign.event_type = -1;
+                    current_scene = SCENE_NODE_MAP;
+                    app_state = STATE_RUNNING;
+                } else {
+                    current_scene = SCENE_SHIP_VIEWER;
+                    sv.initialized = false;
+                    app_state = STATE_RUNNING;
+                }
+                return;
+            }
+        }
+        return;
+    } else if (app_state == STATE_MENU) {
+        for (int i = 0; i < SCENE_MENU_COUNT; i++) {
             float item_y = 115.0f + (float)i * 15.0f;
             if (fx >= 140.0f && fx <= 340.0f &&
                 fy >= item_y - 4.0f && fy <= item_y + 12.0f) {
-                current_scene = i;
-                menu_cursor = i;
-                app_state = STATE_RUNNING;
-
+                if (i == SCENE_SPACE_FLEET) {
+                    menu_cursor = i;
+                    sfa_submenu_cursor = 0;
+                    app_state = STATE_SFA_SUBMENU;
+                } else {
+                    current_scene = i;
+                    menu_cursor = i;
+                    app_state = STATE_RUNNING;
+                }
                 return;
             }
         }
@@ -551,6 +601,51 @@ static void event(const sapp_event *ev) {
     double now_time = sapp_frame_count() * sapp_frame_duration();
 
     /* ── Touch / pointer tracking ────────────────────────────── */
+    /* ── Node Map touch routing ────────────────────────────── */
+    if (current_scene == SCENE_NODE_MAP && app_state == STATE_RUNNING) {
+        if (ev->type == SAPP_EVENTTYPE_MOUSE_DOWN && ev->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+            nm_handle_click(ev->mouse_x, ev->mouse_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_MOUSE_MOVE) {
+            nm_handle_mouse_move(ev->mouse_x, ev->mouse_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && ev->num_touches > 0) {
+            nm_handle_click(ev->touches[0].pos_x, ev->touches[0].pos_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_TOUCHES_MOVED && ev->num_touches > 0) {
+            nm_handle_mouse_move(ev->touches[0].pos_x, ev->touches[0].pos_y);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_KEY_DOWN) {
+            if (ev->key_code == SAPP_KEYCODE_TAB || ev->key_code == SAPP_KEYCODE_ESCAPE)
+                app_state = STATE_MENU;
+            return;
+        }
+        return;
+    }
+
+    /* ── Ship Viewer touch routing ─────────────────────────── */
+    if (current_scene == SCENE_SHIP_VIEWER && app_state == STATE_RUNNING) {
+        if (ev->type == SAPP_EVENTTYPE_MOUSE_DOWN && ev->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+            float fx2, fy2; screen_to_fb(ev->mouse_x, ev->mouse_y, &fx2, &fy2);
+            sv_handle_click(fx2, fy2);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && ev->num_touches > 0) {
+            float fx2, fy2; screen_to_fb(ev->touches[0].pos_x, ev->touches[0].pos_y, &fx2, &fy2);
+            sv_handle_click(fx2, fy2);
+            return;
+        }
+        if (ev->type == SAPP_EVENTTYPE_KEY_DOWN) {
+            sv_handle_key(ev->key_code);
+            return;
+        }
+        return;
+    }
+
     /* ── Space Fleet touch routing ──────────────────────────── */
     if (current_scene == SCENE_SPACE_FLEET && app_state == STATE_RUNNING) {
         if (ev->type == SAPP_EVENTTYPE_MOUSE_DOWN && ev->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
@@ -652,6 +747,69 @@ static void event(const sapp_event *ev) {
         return;
     }
 
+    /* ── Space Fleet sub-menu state ─────────────────────────── */
+    if (app_state == STATE_SFA_SUBMENU) {
+        switch (ev->key_code) {
+            case SAPP_KEYCODE_UP:
+                if (sfa_submenu_cursor > 0) sfa_submenu_cursor--;
+                break;
+            case SAPP_KEYCODE_DOWN:
+                if (sfa_submenu_cursor < 2) sfa_submenu_cursor++;
+                break;
+            case SAPP_KEYCODE_ENTER:
+            case SAPP_KEYCODE_KP_ENTER:
+                if (sfa_submenu_cursor == 0) {
+                    /* Instant Action */
+                    campaign.campaign_active = false;
+                    current_scene = SCENE_SPACE_FLEET;
+                    sfa.initialized = false;
+                    app_state = STATE_RUNNING;
+                } else if (sfa_submenu_cursor == 1) {
+                    /* Campaign */
+                    campaign.campaign_active = true;
+                    campaign.credits = 0;
+                    campaign.player_ship_class = SHIP_CLASS_FRIGATE;
+                    campaign.current_node = 0;
+                    campaign.sector = 1;
+                    campaign.event_type = -1;
+                    current_scene = SCENE_NODE_MAP;
+                    app_state = STATE_RUNNING;
+                } else {
+                    /* Ship Viewer */
+                    current_scene = SCENE_SHIP_VIEWER;
+                    sv.initialized = false;
+                    app_state = STATE_RUNNING;
+                }
+                break;
+            case SAPP_KEYCODE_1:
+                campaign.campaign_active = false;
+                current_scene = SCENE_SPACE_FLEET;
+                sfa.initialized = false;
+                app_state = STATE_RUNNING;
+                break;
+            case SAPP_KEYCODE_2:
+                campaign.campaign_active = true;
+                campaign.credits = 0;
+                campaign.player_ship_class = SHIP_CLASS_FRIGATE;
+                campaign.current_node = 0;
+                campaign.sector = 1;
+                campaign.event_type = -1;
+                current_scene = SCENE_NODE_MAP;
+                app_state = STATE_RUNNING;
+                break;
+            case SAPP_KEYCODE_3:
+                current_scene = SCENE_SHIP_VIEWER;
+                sv.initialized = false;
+                app_state = STATE_RUNNING;
+                break;
+            case SAPP_KEYCODE_ESCAPE:
+                app_state = STATE_MENU;
+                break;
+            default: break;
+        }
+        return;
+    }
+
     /* ── Menu state ──────────────────────────────────────────── */
     if (app_state == STATE_MENU) {
         switch (ev->key_code) {
@@ -659,13 +817,17 @@ static void event(const sapp_event *ev) {
                 if (menu_cursor > 0) menu_cursor--;
                 break;
             case SAPP_KEYCODE_DOWN:
-                if (menu_cursor < SCENE_COUNT - 1) menu_cursor++;
+                if (menu_cursor < SCENE_MENU_COUNT - 1) menu_cursor++;
                 break;
             case SAPP_KEYCODE_ENTER:
             case SAPP_KEYCODE_KP_ENTER:
-                current_scene = menu_cursor;
-                app_state = STATE_RUNNING;
-
+                if (menu_cursor == SCENE_SPACE_FLEET) {
+                    sfa_submenu_cursor = 0;
+                    app_state = STATE_SFA_SUBMENU;
+                } else {
+                    current_scene = menu_cursor;
+                    app_state = STATE_RUNNING;
+                }
                 break;
             case SAPP_KEYCODE_1:
                 current_scene = SCENE_NEIGHBORHOOD;
@@ -688,15 +850,21 @@ static void event(const sapp_event *ev) {
                 app_state = STATE_RUNNING;
                 break;
             case SAPP_KEYCODE_5:
-                current_scene = SCENE_SPACE_FLEET;
                 menu_cursor = SCENE_SPACE_FLEET;
-                app_state = STATE_RUNNING;
+                sfa_submenu_cursor = 0;
+                app_state = STATE_SFA_SUBMENU;
                 break;
             case SAPP_KEYCODE_ESCAPE:
                 app_state = STATE_RUNNING;
                 break;
             default: break;
         }
+        return;
+    }
+
+    /* ── Ship Viewer keys ── */
+    if (current_scene == SCENE_SHIP_VIEWER) {
+        sv_handle_key(ev->key_code);
         return;
     }
 
