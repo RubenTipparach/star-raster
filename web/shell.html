@@ -43,7 +43,7 @@ canvas {
             }, false);
             canvas.addEventListener('mousedown', function() { canvas.focus(); });
             canvas.addEventListener('touchstart', function() { canvas.focus(); });
-            if ('ontouchstart' in window) {
+            if (window.self === window.top) {
                 canvas.addEventListener('touchstart', function() {
                     var el = document.documentElement;
                     if (!document.fullscreenElement) {
