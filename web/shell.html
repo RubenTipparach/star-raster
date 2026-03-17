@@ -24,10 +24,25 @@ canvas {
     font-family: monospace;
     font-size: 16px;
 }
+#play-btn {
+    display: none;
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 20px 48px;
+    font-family: monospace;
+    font-size: 24px;
+    color: #fff;
+    background: #2a2a4e;
+    border: 2px solid #aaa;
+    cursor: pointer;
+    z-index: 10;
+}
 </style>
 </head>
 <body>
 <div id="loading">Loading StarRaster...</div>
+<button id="play-btn">PLAY</button>
 <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
 <script>
     // Prevent space/arrows/tab from scrolling the page (itch.io iframe)
@@ -51,20 +66,21 @@ canvas {
         })(),
         onRuntimeInitialized: function() {
             document.getElementById('loading').style.display = 'none';
-            document.getElementById('canvas').focus();
+            if (window.self === window.top) {
+                document.getElementById('play-btn').style.display = 'block';
+            } else {
+                document.getElementById('canvas').focus();
+            }
         }
     };
 
-    // Request fullscreen on first touch for mobile (top-level pages only)
-    if (window.self === window.top && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
-        document.addEventListener('touchend', function() {
-            var el = document.documentElement;
-            var fn = el.requestFullscreen || el.webkitRequestFullscreen;
-            if (fn && !document.fullscreenElement && !document.webkitFullscreenElement) {
-                fn.call(el);
-            }
-        }, { once: true });
-    }
+    document.getElementById('play-btn').addEventListener('click', function() {
+        this.style.display = 'none';
+        var el = document.documentElement;
+        var fn = el.requestFullscreen || el.webkitRequestFullscreen;
+        if (fn) { fn.call(el); }
+        document.getElementById('canvas').focus();
+    });
 </script>
 {{{ SCRIPT }}}
 </body>
