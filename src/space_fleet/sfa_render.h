@@ -56,24 +56,24 @@ static void sfa_draw_saucer(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
         float x0 = sinf(a0) * radius + cx, z0 = cosf(a0) * radius + cz;
         float x1 = sinf(a1) * radius + cx, z1 = cosf(a1) * radius + cz;
 
-        /* Top face — CCW from above → normal +Y */
+        /* Top face — CCW from above (center→v1→v0, angles go CW from above) */
         sr_draw_triangle(fb_ptr,
             sr_vert_c(cx, cy + half_h, cz, 0.5f, 0.5f, top_col),
-            sr_vert_c(x0, cy + half_h, z0, 0, 0, top_col),
             sr_vert_c(x1, cy + half_h, z1, 1, 0, top_col),
+            sr_vert_c(x0, cy + half_h, z0, 0, 0, top_col),
             NULL, mvp);
-        /* Bottom face — CW from above → normal -Y */
+        /* Bottom face — CCW from below (center→v0→v1) */
         sr_draw_triangle(fb_ptr,
             sr_vert_c(cx, cy - half_h, cz, 0.5f, 0.5f, bot_col),
-            sr_vert_c(x1, cy - half_h, z1, 1, 0, bot_col),
             sr_vert_c(x0, cy - half_h, z0, 0, 0, bot_col),
+            sr_vert_c(x1, cy - half_h, z1, 1, 0, bot_col),
             NULL, mvp);
-        /* Side rim */
+        /* Side rim — CCW from outside (bot0→top0→top1→bot1) */
         sr_draw_quad(fb_ptr,
             sr_vert_c(x0, cy - half_h, z0, 0, 0, side_col),
-            sr_vert_c(x1, cy - half_h, z1, 1, 0, side_col),
-            sr_vert_c(x1, cy + half_h, z1, 1, 1, side_col),
             sr_vert_c(x0, cy + half_h, z0, 0, 1, side_col),
+            sr_vert_c(x1, cy + half_h, z1, 1, 1, side_col),
+            sr_vert_c(x1, cy - half_h, z1, 1, 0, side_col),
             NULL, mvp);
     }
 }
