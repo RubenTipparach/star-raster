@@ -47,14 +47,6 @@ canvas {
             }, false);
             canvas.addEventListener('mousedown', function() { canvas.focus(); });
             canvas.addEventListener('touchstart', function() { canvas.focus(); });
-            if (window.self === window.top && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
-                canvas.addEventListener('touchstart', function() {
-                    var el = document.documentElement;
-                    if (!document.fullscreenElement) {
-                        (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
-                    }
-                }, { once: true });
-            }
             return canvas;
         })(),
         onRuntimeInitialized: function() {
@@ -62,6 +54,17 @@ canvas {
             document.getElementById('canvas').focus();
         }
     };
+
+    // Request fullscreen on first touch for mobile (top-level pages only)
+    if (window.self === window.top && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
+        document.addEventListener('touchend', function() {
+            var el = document.documentElement;
+            var fn = el.requestFullscreen || el.webkitRequestFullscreen;
+            if (fn && !document.fullscreenElement && !document.webkitFullscreenElement) {
+                fn.call(el);
+            }
+        }, { once: true });
+    }
 </script>
 {{{ SCRIPT }}}
 </body>
