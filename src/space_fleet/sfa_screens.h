@@ -45,7 +45,7 @@ static void sfa_draw_briefing(sr_framebuffer *fb_ptr) {
         sr_draw_text_shadow(px, W, H, lx, ly, sbuf, gray, shadow); ly += 10;
         snprintf(sbuf, sizeof(sbuf), "Shields:   6 x %.0f", ps->shield_max);
         sr_draw_text_shadow(px, W, H, lx, ly, sbuf, gray, shadow); ly += 10;
-        snprintf(sbuf, sizeof(sbuf), "Max speed: %.0f m/s", 12.0f * ps->speed_mult);
+        snprintf(sbuf, sizeof(sbuf), "Max speed: %.0f m/s", 6.0f * ps->speed_mult);
         sr_draw_text_shadow(px, W, H, lx, ly, sbuf, gray, shadow); ly += 10;
         snprintf(sbuf, sizeof(sbuf), "Turn rate: %.0f deg/s", 115.0f * ps->turn_mult);
         sr_draw_text_shadow(px, W, H, lx, ly, sbuf, gray, shadow); ly += 16;
@@ -93,7 +93,7 @@ static void sfa_draw_briefing(sr_framebuffer *fb_ptr) {
         sr_draw_text_shadow(px, W, H, rx, ry, buf, gray, shadow); ry += 10;
         snprintf(buf, sizeof(buf), "Shields:   6 x %.0f", es->shield_max);
         sr_draw_text_shadow(px, W, H, rx, ry, buf, gray, shadow); ry += 10;
-        snprintf(buf, sizeof(buf), "Max speed: %.0f m/s", 12.0f * es->speed_mult);
+        snprintf(buf, sizeof(buf), "Max speed: %.0f m/s", 6.0f * es->speed_mult);
         sr_draw_text_shadow(px, W, H, rx, ry, buf, gray, shadow); ry += 10;
         snprintf(buf, sizeof(buf), "Turn rate: %.0f deg/s", 115.0f * es->turn_mult);
         sr_draw_text_shadow(px, W, H, rx, ry, buf, gray, shadow); ry += 16;

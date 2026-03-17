@@ -182,6 +182,19 @@ static void nm_generate_sector(int sector) {
         }
     }
 
+    /* Ensure at least one shop exists in the middle columns */
+    {
+        bool has_shop = false;
+        for (int i = col_start[1]; i < idx; i++) {
+            if (nm.nodes[i].type == NM_NODE_SHOP) { has_shop = true; break; }
+        }
+        if (!has_shop && idx > col_start[1]) {
+            /* Convert a random non-start/non-boss middle node to shop */
+            int pick = col_start[1] + nm_randi(0, idx - col_start[1] - 1);
+            nm.nodes[pick].type = NM_NODE_SHOP;
+        }
+    }
+
     /* Boss node */
     col_start[cols - 1] = idx;
     nm.nodes[idx].type = NM_NODE_BOSS;

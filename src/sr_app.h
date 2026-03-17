@@ -44,8 +44,8 @@ static int    screenshot_counter;
 
 /* ── Scene / Menu state ─────────────────────────────────────────── */
 
-enum { SCENE_NEIGHBORHOOD, SCENE_CUBES, SCENE_PALETTE_HOUSE, SCENE_DUNGEON, SCENE_SPACE_FLEET, SCENE_NODE_MAP, SCENE_COUNT };
-#define SCENE_MENU_COUNT SCENE_SPACE_FLEET + 1  /* only show up to SPACE FLEET in main menu */
+enum { SCENE_NEIGHBORHOOD, SCENE_CUBES, SCENE_PALETTE_HOUSE, SCENE_DUNGEON, SCENE_SPACE_FLEET, SCENE_NODE_MAP, SCENE_SHIP_VIEWER, SCENE_COUNT };
+#define SCENE_MENU_COUNT (SCENE_SPACE_FLEET + 1)  /* only show up to SPACE FLEET in main menu */
 enum { STATE_MENU, STATE_RUNNING, STATE_SFA_SUBMENU };
 
 static int  app_state     = STATE_MENU;
@@ -60,6 +60,7 @@ static const char *scene_names[] = {
     "DUNGEON CRAWLER",
     "SPACE FLEET",
     "SECTOR MAP",
+    "SHIP VIEWER",
 };
 
 /* ── Simple RNG (deterministic) ─────────────────────────────────── */

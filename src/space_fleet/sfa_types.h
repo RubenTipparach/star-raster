@@ -24,7 +24,7 @@
 #define SFA_NUM_SPEEDS   5
 
 static const float sfa_speed_values[SFA_NUM_SPEEDS] = {
-    0.0f, 3.0f, 6.0f, 9.0f, 12.0f
+    0.0f, 1.5f, 3.0f, 4.5f, 6.0f
 };
 static const char *sfa_speed_names[SFA_NUM_SPEEDS] = {
     "ALL STOP", "1/4 IMPULSE", "1/2 IMPULSE", "3/4 IMPULSE", "FULL IMPULSE"
@@ -32,7 +32,7 @@ static const char *sfa_speed_names[SFA_NUM_SPEEDS] = {
 
 /* Ship turn rate (radians/sec) */
 #define SFA_TURN_RATE    2.0f
-#define SFA_STEER_DISC_R 8.0f    /* world-space steering disc radius */
+#define SFA_STEER_DISC_R 6.0f    /* world-space steering disc radius */
 
 /* Sensor ranges */
 #define SFA_SENSOR_SHORT  20.0f     /* short range sensor radius */

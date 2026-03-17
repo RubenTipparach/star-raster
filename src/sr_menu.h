@@ -8,7 +8,7 @@ static void draw_stats(sr_framebuffer *fb_ptr, int tris) {
     uint32_t white  = 0xFFFFFFFF;
     uint32_t shadow = 0xFF000000;
 
-    if (current_scene != SCENE_DUNGEON && current_scene != SCENE_SPACE_FLEET && current_scene != SCENE_NODE_MAP) {
+    if (current_scene != SCENE_DUNGEON && current_scene != SCENE_SPACE_FLEET && current_scene != SCENE_NODE_MAP && current_scene != SCENE_SHIP_VIEWER) {
         snprintf(buf, sizeof(buf), "FPS: %d", fps_display);
         sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
                             3, 3, buf, white, shadow);
@@ -157,8 +157,8 @@ static void draw_sfa_submenu(sr_framebuffer *fb_ptr) {
     sr_draw_text_shadow(px, W, H, 160, 70, "SPACE FLEET", white, shadow);
     sr_draw_text_shadow(px, W, H, 150, 100, "SELECT MODE:", gray, shadow);
 
-    const char *opts[] = { "INSTANT ACTION", "CAMPAIGN" };
-    for (int i = 0; i < 2; i++) {
+    const char *opts[] = { "INSTANT ACTION", "CAMPAIGN", "SHIP VIEWER" };
+    for (int i = 0; i < 3; i++) {
         char line[64];
         snprintf(line, sizeof(line), "[%d]  %s", i + 1, opts[i]);
         uint32_t color = (i == sfa_submenu_cursor) ? yellow : white;
