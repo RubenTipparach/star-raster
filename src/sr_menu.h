@@ -8,7 +8,7 @@ static void draw_stats(sr_framebuffer *fb_ptr, int tris) {
     uint32_t white  = 0xFFFFFFFF;
     uint32_t shadow = 0xFF000000;
 
-    if (current_scene != SCENE_DUNGEON && current_scene != SCENE_SPACE_FLEET) {
+    if (current_scene != SCENE_DUNGEON && current_scene != SCENE_SPACE_FLEET && current_scene != SCENE_NODE_MAP) {
         snprintf(buf, sizeof(buf), "FPS: %d", fps_display);
         sr_draw_text_shadow(fb_ptr->color, fb_ptr->width, fb_ptr->height,
                             3, 3, buf, white, shadow);
@@ -126,13 +126,46 @@ static void draw_menu(sr_framebuffer *fb_ptr) {
     sr_draw_text_shadow(px, W, H, 180, 50, "STARRASTER", white, shadow);
     sr_draw_text_shadow(px, W, H, 150, 90, "SELECT SCENE:", gray, shadow);
 
-    for (int i = 0; i < SCENE_COUNT; i++) {
+    for (int i = 0; i < SCENE_MENU_COUNT; i++) {
         char line[64];
         snprintf(line, sizeof(line), "[%d]  %s", i + 1, scene_names[i]);
         uint32_t color = (i == menu_cursor) ? yellow : white;
         sr_draw_text_shadow(px, W, H, 150, 115 + i * 15, line, color, shadow);
     }
 
+}
+
+static void draw_sfa_submenu(sr_framebuffer *fb_ptr) {
+    int W = fb_ptr->width, H = fb_ptr->height;
+    uint32_t *px = fb_ptr->color;
+
+    /* Darken framebuffer */
+    for (int i = 0; i < W * H; i++) {
+        uint32_t c = px[i];
+        uint8_t r = ((c      ) & 0xFF) >> 2;
+        uint8_t g = ((c >>  8) & 0xFF) >> 2;
+        uint8_t b = ((c >> 16) & 0xFF) >> 2;
+        uint8_t a = (c >> 24) & 0xFF;
+        px[i] = (a << 24) | (b << 16) | (g << 8) | r;
+    }
+
+    uint32_t white  = 0xFFFFFFFF;
+    uint32_t gray   = 0xFF999999;
+    uint32_t yellow = 0xFF00FFFF;
+    uint32_t shadow = 0xFF000000;
+
+    sr_draw_text_shadow(px, W, H, 160, 70, "SPACE FLEET", white, shadow);
+    sr_draw_text_shadow(px, W, H, 150, 100, "SELECT MODE:", gray, shadow);
+
+    const char *opts[] = { "INSTANT ACTION", "CAMPAIGN" };
+    for (int i = 0; i < 2; i++) {
+        char line[64];
+        snprintf(line, sizeof(line), "[%d]  %s", i + 1, opts[i]);
+        uint32_t color = (i == sfa_submenu_cursor) ? yellow : white;
+        sr_draw_text_shadow(px, W, H, 150, 125 + i * 15, line, color, shadow);
+    }
+
+    sr_draw_text_shadow(px, W, H, 150, 170, "ESC = BACK", gray, shadow);
 }
 
 #endif /* SR_MENU_H */
