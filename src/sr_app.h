@@ -148,4 +148,63 @@ typedef struct {
 
 static campaign_state campaign;
 
+/* ── Campaign save/load (localStorage on WASM, no-op elsewhere) ── */
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
+
+static void campaign_save(void) {
+#if defined(__EMSCRIPTEN__)
+    EM_ASM({
+        var save = {
+            credits: $0,
+            ship_class: $1,
+            sector: $2,
+            current_node: $3,
+            active: $4
+        };
+        localStorage.setItem('sr_campaign', JSON.stringify(save));
+    }, campaign.credits, campaign.player_ship_class,
+       campaign.sector, campaign.current_node,
+       campaign.campaign_active ? 1 : 0);
+#endif
+}
+
+static bool campaign_has_save(void) {
+#if defined(__EMSCRIPTEN__)
+    return EM_ASM_INT({
+        return localStorage.getItem('sr_campaign') !== null ? 1 : 0;
+    });
+#else
+    return false;
+#endif
+}
+
+static bool campaign_load(void) {
+#if defined(__EMSCRIPTEN__)
+    if (!campaign_has_save()) return false;
+    int credits = EM_ASM_INT({ var s = JSON.parse(localStorage.getItem('sr_campaign')); return s.credits; });
+    int ship_cls = EM_ASM_INT({ var s = JSON.parse(localStorage.getItem('sr_campaign')); return s.ship_class; });
+    int sector = EM_ASM_INT({ var s = JSON.parse(localStorage.getItem('sr_campaign')); return s.sector; });
+    int node = EM_ASM_INT({ var s = JSON.parse(localStorage.getItem('sr_campaign')); return s.current_node; });
+    campaign.credits = credits;
+    campaign.player_ship_class = ship_cls;
+    campaign.sector = sector;
+    campaign.current_node = node;
+    campaign.campaign_active = true;
+    campaign.combat_victory = false;
+    campaign.event_type = -1;
+    return true;
+#else
+    return false;
+#endif
+}
+
+static void campaign_delete_save(void) {
+#if defined(__EMSCRIPTEN__)
+    EM_ASM({ localStorage.removeItem('sr_campaign'); });
+#endif
+}
+
 #endif /* SR_APP_H */

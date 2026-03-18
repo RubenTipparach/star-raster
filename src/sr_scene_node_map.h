@@ -389,6 +389,7 @@ static void nm_init(void) {
         campaign.credits += campaign.encounter_reward;
         campaign.combat_victory = false;
         nm_update_reachable();
+        campaign_save();
     } else {
         nm.current_node = campaign.current_node;
         nm_update_reachable();
@@ -709,6 +710,7 @@ static void nm_resolve_event(int choice) {
         }
         campaign.credits += d->credits_delta;
         if (campaign.credits < 0) campaign.credits = 0;
+        campaign_save();
     } else {
         d->credits_delta = 0;
         d->result_text = "Moved on safely.";
@@ -721,6 +723,7 @@ static void nm_advance_sector(void) {
     campaign.sector++;
     campaign.current_node = 0;
     nm.initialized = false;
+    campaign_save();
 }
 
 static void nm_enter_node(int node_idx) {
@@ -849,6 +852,7 @@ static bool nm_handle_click(float sx, float sy) {
             if (cls != campaign.player_ship_class && campaign.credits >= ship_classes[cls].cost) {
                 campaign.credits -= ship_classes[cls].cost;
                 campaign.player_ship_class = cls;
+                campaign_save();
             }
             return true;
         }

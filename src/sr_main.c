@@ -47,6 +47,52 @@
 #include "sr_menu.h"
 #include "sr_mobile_input.h"
 
+/* ── SFA submenu action handler ─────────────────────────────────── */
+
+static void sfa_submenu_select(int cursor_idx) {
+    sfa_build_menu_items();
+    if (cursor_idx < 0 || cursor_idx >= sfa_menu_visible_count) return;
+    int id = sfa_menu_items[cursor_idx];
+    switch (id) {
+        case SFA_MENU_INSTANT_ACTION:
+            campaign.campaign_active = false;
+            current_scene = SCENE_SPACE_FLEET;
+            sfa.initialized = false;
+            app_state = STATE_RUNNING;
+            break;
+        case SFA_MENU_CONTINUE:
+            if (campaign_load()) {
+                current_scene = SCENE_NODE_MAP;
+                app_state = STATE_RUNNING;
+            }
+            break;
+        case SFA_MENU_NEW_CAMPAIGN:
+            campaign.campaign_active = true;
+            campaign.credits = 0;
+            campaign.player_ship_class = SHIP_CLASS_FRIGATE;
+            campaign.current_node = 0;
+            campaign.sector = 0;
+            campaign.combat_victory = false;
+            campaign.event_type = -1;
+            campaign_save();
+            current_scene = SCENE_NODE_MAP;
+            app_state = STATE_RUNNING;
+            break;
+        case SFA_MENU_DELETE_SAVE:
+            campaign_delete_save();
+            campaign.campaign_active = false;
+            sfa_build_menu_items();
+            if (sfa_submenu_cursor >= sfa_menu_visible_count)
+                sfa_submenu_cursor = sfa_menu_visible_count - 1;
+            break;
+        case SFA_MENU_SHIP_VIEWER:
+            current_scene = SCENE_SHIP_VIEWER;
+            sv.initialized = false;
+            app_state = STATE_RUNNING;
+            break;
+    }
+}
+
 /* ── Shaders ─────────────────────────────────────────────────────── */
 
 #if defined(SOKOL_GLCORE)
@@ -507,30 +553,13 @@ static void handle_tap(float sx, float sy) {
     screen_to_fb(sx, sy, &fx, &fy);
 
     if (app_state == STATE_SFA_SUBMENU) {
-        for (int i = 0; i < 3; i++) {
+        sfa_build_menu_items();
+        for (int i = 0; i < sfa_menu_visible_count; i++) {
             float item_y = 125.0f + (float)i * 15.0f;
             if (fx >= 140.0f && fx <= 340.0f &&
                 fy >= item_y - 4.0f && fy <= item_y + 12.0f) {
                 sfa_submenu_cursor = i;
-                if (i == 0) {
-                    campaign.campaign_active = false;
-                    current_scene = SCENE_SPACE_FLEET;
-                    sfa.initialized = false;
-                    app_state = STATE_RUNNING;
-                } else if (i == 1) {
-                    campaign.campaign_active = true;
-                    campaign.credits = 0;
-                    campaign.player_ship_class = SHIP_CLASS_FRIGATE;
-                    campaign.current_node = 0;
-                    campaign.sector = 1;
-                    campaign.event_type = -1;
-                    current_scene = SCENE_NODE_MAP;
-                    app_state = STATE_RUNNING;
-                } else {
-                    current_scene = SCENE_SHIP_VIEWER;
-                    sv.initialized = false;
-                    app_state = STATE_RUNNING;
-                }
+                sfa_submenu_select(i);
                 return;
             }
         }
@@ -749,58 +778,32 @@ static void event(const sapp_event *ev) {
 
     /* ── Space Fleet sub-menu state ─────────────────────────── */
     if (app_state == STATE_SFA_SUBMENU) {
+        sfa_build_menu_items();
         switch (ev->key_code) {
             case SAPP_KEYCODE_UP:
                 if (sfa_submenu_cursor > 0) sfa_submenu_cursor--;
                 break;
             case SAPP_KEYCODE_DOWN:
-                if (sfa_submenu_cursor < 2) sfa_submenu_cursor++;
+                if (sfa_submenu_cursor < sfa_menu_visible_count - 1) sfa_submenu_cursor++;
                 break;
             case SAPP_KEYCODE_ENTER:
             case SAPP_KEYCODE_KP_ENTER:
-                if (sfa_submenu_cursor == 0) {
-                    /* Instant Action */
-                    campaign.campaign_active = false;
-                    current_scene = SCENE_SPACE_FLEET;
-                    sfa.initialized = false;
-                    app_state = STATE_RUNNING;
-                } else if (sfa_submenu_cursor == 1) {
-                    /* Campaign */
-                    campaign.campaign_active = true;
-                    campaign.credits = 0;
-                    campaign.player_ship_class = SHIP_CLASS_FRIGATE;
-                    campaign.current_node = 0;
-                    campaign.sector = 1;
-                    campaign.event_type = -1;
-                    current_scene = SCENE_NODE_MAP;
-                    app_state = STATE_RUNNING;
-                } else {
-                    /* Ship Viewer */
-                    current_scene = SCENE_SHIP_VIEWER;
-                    sv.initialized = false;
-                    app_state = STATE_RUNNING;
-                }
+                sfa_submenu_select(sfa_submenu_cursor);
                 break;
             case SAPP_KEYCODE_1:
-                campaign.campaign_active = false;
-                current_scene = SCENE_SPACE_FLEET;
-                sfa.initialized = false;
-                app_state = STATE_RUNNING;
+                if (0 < sfa_menu_visible_count) sfa_submenu_select(0);
                 break;
             case SAPP_KEYCODE_2:
-                campaign.campaign_active = true;
-                campaign.credits = 0;
-                campaign.player_ship_class = SHIP_CLASS_FRIGATE;
-                campaign.current_node = 0;
-                campaign.sector = 1;
-                campaign.event_type = -1;
-                current_scene = SCENE_NODE_MAP;
-                app_state = STATE_RUNNING;
+                if (1 < sfa_menu_visible_count) sfa_submenu_select(1);
                 break;
             case SAPP_KEYCODE_3:
-                current_scene = SCENE_SHIP_VIEWER;
-                sv.initialized = false;
-                app_state = STATE_RUNNING;
+                if (2 < sfa_menu_visible_count) sfa_submenu_select(2);
+                break;
+            case SAPP_KEYCODE_4:
+                if (3 < sfa_menu_visible_count) sfa_submenu_select(3);
+                break;
+            case SAPP_KEYCODE_5:
+                if (4 < sfa_menu_visible_count) sfa_submenu_select(4);
                 break;
             case SAPP_KEYCODE_ESCAPE:
                 app_state = STATE_MENU;

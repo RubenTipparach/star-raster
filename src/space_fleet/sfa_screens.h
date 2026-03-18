@@ -205,13 +205,25 @@ static void sfa_draw_stats_screen(sr_framebuffer *fb_ptr) {
 
     /* Player ship status */
     sr_draw_text_shadow(px, W, H, cx, y, "SHIP STATUS", accent, shadow); y += 14;
-    snprintf(buf, sizeof(buf), "Hull integrity:    %d%%", (int)sfa.player.hull);
-    uint32_t hull_col = sfa.player.hull > 50 ? green : 0xFF4466FF;
-    sr_draw_text_shadow(px, W, H, cx, y, buf, hull_col, shadow); y += 12;
+    {
+        int pcls = sfa.player.ship_class;
+        if (pcls < 0 || pcls >= SHIP_CLASS_COUNT) pcls = SHIP_CLASS_CRUISER;
+        float hull_max = (float)ship_classes[pcls].hull_max;
+        int hull_pct = (hull_max > 0) ? (int)(sfa.player.hull / hull_max * 100.0f) : 0;
+        snprintf(buf, sizeof(buf), "Hull integrity:    %d%%", hull_pct);
+        uint32_t hull_col = (sfa.player.hull > hull_max * 0.5f) ? green : 0xFF4466FF;
+        sr_draw_text_shadow(px, W, H, cx, y, buf, hull_col, shadow); y += 12;
+    }
 
-    float total_shields = 0;
-    for (int i = 0; i < 6; i++) total_shields += sfa.player.shields[i];
-    snprintf(buf, sizeof(buf), "Shields remaining: %.0f%%", total_shields / 6.0f);
+    {
+        int scls = sfa.player.ship_class;
+        if (scls < 0 || scls >= SHIP_CLASS_COUNT) scls = SHIP_CLASS_CRUISER;
+        float shield_total_max = 6.0f * ship_classes[scls].shield_max;
+        float total_shields = 0;
+        for (int i = 0; i < 6; i++) total_shields += sfa.player.shields[i];
+        float sh_pct = (shield_total_max > 0) ? (total_shields / shield_total_max * 100.0f) : 0;
+        snprintf(buf, sizeof(buf), "Shields remaining: %.0f%%", sh_pct);
+    }
     sr_draw_text_shadow(px, W, H, cx, y, buf, gray, shadow); y += 12;
 
     snprintf(buf, sizeof(buf), "Torpedoes left:    %d", sfa.player.torpedoes_remaining);

@@ -135,6 +135,41 @@ static void draw_menu(sr_framebuffer *fb_ptr) {
 
 }
 
+/* SFA submenu item indices */
+enum {
+    SFA_MENU_INSTANT_ACTION,
+    SFA_MENU_CONTINUE,
+    SFA_MENU_NEW_CAMPAIGN,
+    SFA_MENU_DELETE_SAVE,
+    SFA_MENU_SHIP_VIEWER,
+    SFA_MENU_COUNT
+};
+
+static int sfa_menu_items[SFA_MENU_COUNT]; /* visible item indices */
+static int sfa_menu_visible_count = 0;
+
+static void sfa_build_menu_items(void) {
+    sfa_menu_visible_count = 0;
+    sfa_menu_items[sfa_menu_visible_count++] = SFA_MENU_INSTANT_ACTION;
+    if (campaign_has_save())
+        sfa_menu_items[sfa_menu_visible_count++] = SFA_MENU_CONTINUE;
+    sfa_menu_items[sfa_menu_visible_count++] = SFA_MENU_NEW_CAMPAIGN;
+    if (campaign_has_save())
+        sfa_menu_items[sfa_menu_visible_count++] = SFA_MENU_DELETE_SAVE;
+    sfa_menu_items[sfa_menu_visible_count++] = SFA_MENU_SHIP_VIEWER;
+}
+
+static const char *sfa_menu_label(int id) {
+    switch (id) {
+        case SFA_MENU_INSTANT_ACTION: return "INSTANT ACTION";
+        case SFA_MENU_CONTINUE:       return "CONTINUE";
+        case SFA_MENU_NEW_CAMPAIGN:   return "NEW CAMPAIGN";
+        case SFA_MENU_DELETE_SAVE:    return "DELETE SAVE";
+        case SFA_MENU_SHIP_VIEWER:    return "SHIP VIEWER";
+        default:                      return "???";
+    }
+}
+
 static void draw_sfa_submenu(sr_framebuffer *fb_ptr) {
     int W = fb_ptr->width, H = fb_ptr->height;
     uint32_t *px = fb_ptr->color;
@@ -152,20 +187,26 @@ static void draw_sfa_submenu(sr_framebuffer *fb_ptr) {
     uint32_t white  = 0xFFFFFFFF;
     uint32_t gray   = 0xFF999999;
     uint32_t yellow = 0xFF00FFFF;
+    uint32_t red    = 0xFF4444FF;
     uint32_t shadow = 0xFF000000;
 
     sr_draw_text_shadow(px, W, H, 160, 70, "SPACE FLEET", white, shadow);
     sr_draw_text_shadow(px, W, H, 150, 100, "SELECT MODE:", gray, shadow);
 
-    const char *opts[] = { "INSTANT ACTION", "CAMPAIGN", "SHIP VIEWER" };
-    for (int i = 0; i < 3; i++) {
+    sfa_build_menu_items();
+    if (sfa_submenu_cursor >= sfa_menu_visible_count)
+        sfa_submenu_cursor = sfa_menu_visible_count - 1;
+
+    for (int i = 0; i < sfa_menu_visible_count; i++) {
+        int id = sfa_menu_items[i];
         char line[64];
-        snprintf(line, sizeof(line), "[%d]  %s", i + 1, opts[i]);
+        snprintf(line, sizeof(line), "[%d]  %s", i + 1, sfa_menu_label(id));
         uint32_t color = (i == sfa_submenu_cursor) ? yellow : white;
+        if (id == SFA_MENU_DELETE_SAVE) color = (i == sfa_submenu_cursor) ? yellow : red;
         sr_draw_text_shadow(px, W, H, 150, 125 + i * 15, line, color, shadow);
     }
 
-    sr_draw_text_shadow(px, W, H, 150, 170, "ESC = BACK", gray, shadow);
+    sr_draw_text_shadow(px, W, H, 150, 125 + sfa_menu_visible_count * 15 + 10, "ESC = BACK", gray, shadow);
 }
 
 #endif /* SR_MENU_H */
