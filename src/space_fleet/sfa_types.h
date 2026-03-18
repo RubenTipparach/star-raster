@@ -122,6 +122,7 @@ typedef struct {
     uint32_t color_hull;      /* custom hull color (0 = use default) */
     uint32_t color_accent;    /* custom accent color */
     int      ship_class;      /* SHIP_CLASS_* enum — determines 3D model */
+    bool     is_boss;         /* boss ships are rendered in red */
 
     /* Weapons */
     float phaser_cooldown;    /* seconds until phaser ready (0 = ready) */

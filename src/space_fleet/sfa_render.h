@@ -1015,19 +1015,34 @@ static const float kling_bbox[SHIP_CLASS_COUNT][6] = {
 };
 
 static void sfa_draw_target_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,
-                                   float tx, float tz, float heading, int ship_class) {
+                                   float tx, float tz, float heading, int ship_class,
+                                   bool is_boss) {
     int cls = ship_class;
     if (cls < 0 || cls >= SHIP_CLASS_COUNT) cls = SHIP_CLASS_DESTROYER;
 
-    uint32_t hull_t = sfa_pal_abgr(30);
-    uint32_t hull_s = sfa_pal_abgr(29);
-    uint32_t hull_b = sfa_pal_abgr(35);
-    uint32_t wing_t = sfa_pal_abgr(36);
-    uint32_t wing_s = sfa_pal_abgr(35);
-    uint32_t wing_b = sfa_pal_abgr(34);
-    uint32_t head_t = sfa_pal_abgr(31);
-    uint32_t head_s = sfa_pal_abgr(30);
-    uint32_t gun_col = sfa_pal_abgr(15);
+    uint32_t hull_t, hull_s, hull_b, wing_t, wing_s, wing_b, head_t, head_s, gun_col;
+    if (is_boss) {
+        /* Boss ships: red/crimson color scheme */
+        hull_t  = 0xFF3333CC; /* bright red (ABGR) */
+        hull_s  = 0xFF2222AA;
+        hull_b  = 0xFF111166;
+        wing_t  = 0xFF4444DD;
+        wing_s  = 0xFF3333AA;
+        wing_b  = 0xFF222277;
+        head_t  = 0xFF4455EE;
+        head_s  = 0xFF3344CC;
+        gun_col = 0xFF5566FF;
+    } else {
+        hull_t = sfa_pal_abgr(30);
+        hull_s = sfa_pal_abgr(29);
+        hull_b = sfa_pal_abgr(35);
+        wing_t = sfa_pal_abgr(36);
+        wing_s = sfa_pal_abgr(35);
+        wing_b = sfa_pal_abgr(34);
+        head_t = sfa_pal_abgr(31);
+        head_s = sfa_pal_abgr(30);
+        gun_col = sfa_pal_abgr(15);
+    }
 
     sr_mat4 model = sr_mat4_mul(
         sr_mat4_translate(tx, 0.0f, tz),

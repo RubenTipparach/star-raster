@@ -138,6 +138,7 @@ typedef struct {
     /* Combat encounter setup */
     int  encounter_enemy_count;
     int  encounter_enemy_classes[4];
+    bool encounter_enemy_is_boss[4]; /* true = boss ship (rendered red) */
     int  encounter_reward;
     bool combat_victory;
 

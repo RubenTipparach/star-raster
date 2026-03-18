@@ -196,7 +196,8 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
     for (int i = 0; i < sfa.npc_count; i++) {
         if (!sfa.npcs[i].alive) continue;
         sfa_draw_target_ship(fb_ptr, &vp, sfa.npcs[i].x, sfa.npcs[i].z,
-                             sfa.npcs[i].visual_heading, sfa.npcs[i].ship_class);
+                             sfa.npcs[i].visual_heading, sfa.npcs[i].ship_class,
+                             sfa.npcs[i].is_boss);
     }
 
     /* Draw phaser beams (2D dithered lines projected to screen) */

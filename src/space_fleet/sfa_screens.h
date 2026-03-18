@@ -77,8 +77,13 @@ static void sfa_draw_briefing(sr_framebuffer *fb_ptr) {
         for (int ei = 0; ei < sfa.npc_count && ei < SFA_MAX_NPC; ei++) {
             int ecls = sfa.npcs[ei].ship_class;
             if (ecls < 0 || ecls >= SHIP_CLASS_COUNT) ecls = SHIP_CLASS_DESTROYER;
-            snprintf(buf, sizeof(buf), "Klingon %s", ship_class_names[ecls]);
-            sr_draw_text_shadow(px, W, H, rx, ry, buf, white, shadow);
+            if (sfa.npcs[ei].is_boss) {
+                snprintf(buf, sizeof(buf), "Klingon %s [BOSS]", ship_class_names[ecls]);
+                sr_draw_text_shadow(px, W, H, rx, ry, buf, warn, shadow);
+            } else {
+                snprintf(buf, sizeof(buf), "Klingon %s", ship_class_names[ecls]);
+                sr_draw_text_shadow(px, W, H, rx, ry, buf, white, shadow);
+            }
             ry += 10;
         }
     }

@@ -100,7 +100,7 @@ static void draw_ship_viewer_scene(sr_framebuffer *fb_ptr, float dt) {
         if (sv.faction == 0) {
             sfa_draw_ship(fb_ptr, &vp, &dummy);
         } else {
-            sfa_draw_target_ship(fb_ptr, &vp, 0, 0, 0, sv.ship_class);
+            sfa_draw_target_ship(fb_ptr, &vp, 0, 0, 0, sv.ship_class, false);
         }
     }
 
