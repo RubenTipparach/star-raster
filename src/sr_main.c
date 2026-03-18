@@ -522,7 +522,7 @@ static void handle_tap(float sx, float sy) {
                     campaign.credits = 0;
                     campaign.player_ship_class = SHIP_CLASS_FRIGATE;
                     campaign.current_node = 0;
-                    campaign.sector = 1;
+                    campaign.sector = 0;
                     campaign.event_type = -1;
                     current_scene = SCENE_NODE_MAP;
                     app_state = STATE_RUNNING;
@@ -770,7 +770,7 @@ static void event(const sapp_event *ev) {
                     campaign.credits = 0;
                     campaign.player_ship_class = SHIP_CLASS_FRIGATE;
                     campaign.current_node = 0;
-                    campaign.sector = 1;
+                    campaign.sector = 0;
                     campaign.event_type = -1;
                     current_scene = SCENE_NODE_MAP;
                     app_state = STATE_RUNNING;

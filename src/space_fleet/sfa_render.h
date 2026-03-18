@@ -404,14 +404,12 @@ static void sfa_draw_fed_cruiser(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
 /* ════════════════════════════════════════════════════════════════════
  *  BATTLECRUISER — Excelsior class
  *  Large elongated saucer that tapers into engineering hull (no neck).
- *  Two massive nacelles on swept-back pylons. Secondary torpedo pod.
- *  Heavier, more aggressive Federation design.
+ *  Two massive nacelles level with secondary hull on horizontal pylons.
+ *  Secondary torpedo pod. Heavier, more aggressive Federation design.
  *
- *  Side view:                  nac
- *                             / |
- *           =====saucer=======eng=
- *              [torp pod]    / |
- *                            nac
+ *  Side view:
+ *           =====saucer=======eng= nac
+ *              [torp pod]          nac
  *
  *  Top view:     nac──────\
  *         ======O===========[eng]
@@ -469,35 +467,35 @@ static void sfa_draw_fed_battlecruiser(sr_framebuffer *fb_ptr, const sr_mat4 *mv
         sr_vert_c( 0.06f, -0.08f, 0.61f, 1,0, 0xFF4444CC),
         NULL, mvp);
 
-    /* Nacelle pylons — long swept diagonal from engineering hull */
-    float nx = 0.95f, npy = 0.42f;
+    /* Nacelle pylons — horizontal, nacelles level with secondary hull */
+    float nx = 0.95f, npy = -0.05f;
 
-    /* Left pylon */
+    /* Left pylon (front face — horizontal) */
     sr_draw_quad(fb_ptr,
-        sr_vert_c(-0.28f, 0.0f, -0.80f, 0,0, pylon_col),
-        sr_vert_c(-0.28f, 0.0f, -1.20f, 0,1, pylon_col),
+        sr_vert_c(-0.28f, npy, -0.80f, 0,0, pylon_col),
+        sr_vert_c(-0.28f, npy, -1.20f, 0,1, pylon_col),
         sr_vert_c(-nx, npy, -1.20f, 1,1, pylon_col),
         sr_vert_c(-nx, npy, -0.80f, 1,0, pylon_col),
         NULL, mvp);
     sr_draw_quad(fb_ptr,
-        sr_vert_c(-0.28f, 0.05f, -0.80f, 0,0, pylon_col),
+        sr_vert_c(-0.28f, npy+0.05f, -0.80f, 0,0, pylon_col),
         sr_vert_c(-nx, npy+0.05f, -0.80f, 0,1, pylon_col),
         sr_vert_c(-nx, npy+0.05f, -1.20f, 1,1, pylon_col),
-        sr_vert_c(-0.28f, 0.05f, -1.20f, 1,0, pylon_col),
+        sr_vert_c(-0.28f, npy+0.05f, -1.20f, 1,0, pylon_col),
         NULL, mvp);
 
-    /* Right pylon */
+    /* Right pylon (front face — horizontal) */
     sr_draw_quad(fb_ptr,
-        sr_vert_c(0.28f, 0.0f, -1.20f, 0,0, pylon_col),
-        sr_vert_c(0.28f, 0.0f, -0.80f, 0,1, pylon_col),
+        sr_vert_c(0.28f, npy, -1.20f, 0,0, pylon_col),
+        sr_vert_c(0.28f, npy, -0.80f, 0,1, pylon_col),
         sr_vert_c(nx, npy, -0.80f, 1,1, pylon_col),
         sr_vert_c(nx, npy, -1.20f, 1,0, pylon_col),
         NULL, mvp);
     sr_draw_quad(fb_ptr,
-        sr_vert_c(0.28f, 0.05f, -1.20f, 0,0, pylon_col),
+        sr_vert_c(0.28f, npy+0.05f, -1.20f, 0,0, pylon_col),
         sr_vert_c(nx, npy+0.05f, -1.20f, 0,1, pylon_col),
         sr_vert_c(nx, npy+0.05f, -0.80f, 1,1, pylon_col),
-        sr_vert_c(0.28f, 0.05f, -0.80f, 1,0, pylon_col),
+        sr_vert_c(0.28f, npy+0.05f, -0.80f, 1,0, pylon_col),
         NULL, mvp);
 
     /* Nacelles — large */
@@ -922,11 +920,11 @@ static void sfa_draw_kling_cruiser(sr_framebuffer *fb_ptr, const sr_mat4 *mvp,
         sr_vert_c( 0.10f, -0.02f, 1.31f, 1,0, gun_col),
         NULL, mvp);
 
-    /* Shorter, wider angular wings */
+    /* D7-style wings — straight out (no sweep), pitched ~10 degrees down */
     sfa_draw_klingon_wings(fb_ptr, mvp,
         0.35f, -1.10f, -0.10f,
-        1.50f, -0.16f,
-        0.45f, -0.25f,
+        1.50f, -0.20f,
+        -0.10f, -0.70f,
         0.08f,
         wing_t, wing_s, wing_b, gun_col);
 }
@@ -954,18 +952,23 @@ static void sfa_draw_kling_battlecruiser(sr_framebuffer *fb_ptr, const sr_mat4 *
                  hull_s, hull_b, hull_b);
     sfa_draw_box(fb_ptr, mvp,  0.42f, -0.10f, -1.40f,  0.58f, 0.14f, -0.60f,
                  hull_s, hull_b, hull_b);
+    /* Nacelles — elongated aft behind engine pods */
+    sfa_draw_box(fb_ptr, mvp, -0.56f, -0.06f, -2.00f, -0.44f, 0.10f, -0.60f,
+                 0xFF2244AA, 0xFF1A3388, 0xFF112266);
+    sfa_draw_box(fb_ptr, mvp,  0.44f, -0.06f, -2.00f,  0.56f, 0.10f, -0.60f,
+                 0xFF2244AA, 0xFF1A3388, 0xFF112266);
     /* Engine glows */
     sr_draw_quad(fb_ptr,
-        sr_vert_c(-0.58f, -0.05f, -1.41f, 0,0, 0xFF2244AA),
-        sr_vert_c(-0.58f,  0.10f, -1.41f, 0,1, 0xFF2244AA),
-        sr_vert_c(-0.42f,  0.10f, -1.41f, 1,1, 0xFF2244AA),
-        sr_vert_c(-0.42f, -0.05f, -1.41f, 1,0, 0xFF2244AA),
+        sr_vert_c(-0.56f, -0.06f, -2.01f, 0,0, 0xFF2244AA),
+        sr_vert_c(-0.56f,  0.10f, -2.01f, 0,1, 0xFF2244AA),
+        sr_vert_c(-0.44f,  0.10f, -2.01f, 1,1, 0xFF2244AA),
+        sr_vert_c(-0.44f, -0.06f, -2.01f, 1,0, 0xFF2244AA),
         NULL, mvp);
     sr_draw_quad(fb_ptr,
-        sr_vert_c( 0.42f, -0.05f, -1.41f, 0,0, 0xFF2244AA),
-        sr_vert_c( 0.42f,  0.10f, -1.41f, 0,1, 0xFF2244AA),
-        sr_vert_c( 0.58f,  0.10f, -1.41f, 1,1, 0xFF2244AA),
-        sr_vert_c( 0.58f, -0.05f, -1.41f, 1,0, 0xFF2244AA),
+        sr_vert_c( 0.44f, -0.06f, -2.01f, 0,0, 0xFF2244AA),
+        sr_vert_c( 0.44f,  0.10f, -2.01f, 0,1, 0xFF2244AA),
+        sr_vert_c( 0.56f,  0.10f, -2.01f, 1,1, 0xFF2244AA),
+        sr_vert_c( 0.56f, -0.06f, -2.01f, 1,0, 0xFF2244AA),
         NULL, mvp);
 
     /* Elongated forward section — tapered, integrated neck + head */
@@ -994,11 +997,11 @@ static void sfa_draw_kling_battlecruiser(sr_framebuffer *fb_ptr, const sr_mat4 *
         sr_vert_c( 0.06f, -0.28f, 0.51f, 1,0, gun_col),
         NULL, mvp);
 
-    /* Very wide heavy wings */
+    /* Flat horizontal wings — no sweep, no droop, nacelles at hull height */
     sfa_draw_klingon_wings(fb_ptr, mvp,
         0.42f, -1.50f, -0.20f,
-        1.80f, -0.20f,
-        0.60f, -0.35f,
+        1.80f, 0.0f,
+        -0.20f, -0.85f,
         0.10f,
         wing_t, wing_s, wing_b, gun_col);
 }
@@ -1010,8 +1013,8 @@ static const float kling_bbox[SHIP_CLASS_COUNT][6] = {
     /* min_x,    min_y,   min_z,   max_x,  max_y,  max_z */
     { -0.79f, -0.10f, -0.45f,  0.79f, 0.10f, 0.51f },  /* FRIGATE */
     { -1.37f, -0.18f, -0.85f,  1.37f, 0.14f, 1.06f },  /* DESTROYER */
-    { -1.58f, -0.20f, -1.10f,  1.58f, 0.18f, 1.31f },  /* CRUISER */
-    { -1.90f, -0.30f, -1.50f,  1.90f, 0.30f, 1.51f },  /* BATTLECRUISER */
+    { -1.58f, -0.24f, -1.10f,  1.58f, 0.18f, 1.31f },  /* CRUISER */
+    { -1.90f, -0.18f, -2.01f,  1.90f, 0.30f, 1.51f },  /* BATTLECRUISER */
 };
 
 static void sfa_draw_target_ship(sr_framebuffer *fb_ptr, const sr_mat4 *vp,

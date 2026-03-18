@@ -358,8 +358,13 @@ static void draw_space_fleet_scene(sr_framebuffer *fb_ptr, float dt) {
                 sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half + 2, bracket_col);
                 sfa_draw_targeting_brackets(px, W, H, scr_x, scr_y, bracket_half, bracket_col);
 
-                char tbuf[32];
-                snprintf(tbuf, sizeof(tbuf), "TGT: %.0fm", dist);
+                char tbuf[48];
+                const char *cls_name = (npc->ship_class >= 0 && npc->ship_class < SHIP_CLASS_COUNT)
+                    ? ship_class_names[npc->ship_class] : "UNKNOWN";
+                if (npc->is_boss)
+                    snprintf(tbuf, sizeof(tbuf), "BOSS %s: %.0fm", cls_name, dist);
+                else
+                    snprintf(tbuf, sizeof(tbuf), "%s: %.0fm", cls_name, dist);
                 sr_draw_text_shadow(px, W, H, scr_x - 18, scr_y + bracket_half + 4,
                                      tbuf, bracket_col, SFA_HUD_SHADOW);
             } else if (i == sfa.hovered_npc) {
