@@ -566,15 +566,12 @@ static void sfa_draw_hud(sr_framebuffer *fb_ptr, sfa_ship *s) {
     /* Heading */
     sfa_draw_heading_hud(px, W, H, s, W / 2, 3);
 
-    /* Player health bar (top-left) */
+    /* Player health bar (top-left) — hull only (shields shown in hex) */
     {
         int pcls = s->ship_class;
         if (pcls < 0 || pcls >= SHIP_CLASS_COUNT) pcls = SHIP_CLASS_CRUISER;
         const ship_class_stats *psc = &ship_classes[pcls];
-        float max_hp = (float)psc->hull_max + 6.0f * psc->shield_max;
-        float total_hp = s->hull;
-        for (int i = 0; i < 6; i++) total_hp += s->shields[i];
-        float hp_pct = total_hp / max_hp;
+        float hp_pct = s->hull / (float)psc->hull_max;
         if (hp_pct < 0) hp_pct = 0;
         if (hp_pct > 1) hp_pct = 1;
 
